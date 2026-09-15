@@ -9,6 +9,12 @@ from datetime import datetime
 from io import BytesIO
 import streamlit.components.v1 as components
 
+# PDF Report Libraries
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+
 # --- CONFIGURATION ---
 DB_FILE = "reagents.json"
 IST = pytz.timezone('Asia/Kolkata')
@@ -32,10 +38,7 @@ def talk_back(text):
 
 # --- INTERNAL ROBUST COLOR NAMING ENGINE ---
 def get_universal_name(rgb):
-    """Built-in naming engine: No external library required, zero failure."""
     r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
-    
-    # 1. Forensic Color Palette (Common reagent outcomes + universal shades)
     colors_db = {
         "Pure White": (255, 255, 255), "Ivory": (255, 255, 240), "Silver": (192, 192, 192),
         "Dark Gray": (169, 169, 169), "Jet Black": (15, 15, 15), "Deep Crimson": (153, 0, 0),
@@ -47,23 +50,18 @@ def get_universal_name(rgb):
         "Magenta": (255, 0, 255), "Pink": (255, 192, 203), "Brown": (139, 69, 19),
         "Tan": (210, 180, 140), "Slate": (112, 128, 144), "Pale Blue": (173, 216, 230)
     }
-
     best_match = "Unknown Shade"
     min_dist = float('inf')
-    
     for name, c_rgb in colors_db.items():
         dist = np.sqrt((c_rgb[0]-r)**2 + (c_rgb[1]-g)**2 + (c_rgb[2]-b)**2)
         if dist < min_dist:
             min_dist = dist
             best_match = name
-
-    # Fine-tuning for neutrals (if RGB values are very close together)
     diff = max(r, g, b) - min(r, g, b)
     if diff < 15:
         if r > 200: return "Off-White"
         if r < 40: return "Charcoal Black"
         return "Neutral Gray"
-
     return best_match
 
 def rgb_to_lab_scaled(rgb):
@@ -71,6 +69,48 @@ def rgb_to_lab_scaled(rgb):
     pixel_lab = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2Lab)
     l, a, b = pixel_lab[0][0].astype(float)
     return [round(l * (100/255), 1), round(a - 128, 1), round(b - 128, 1)]
+
+# --- NEW: PDF GENERATOR FUNCTION ---
+def generate_pdf(case_info, color_data, match_info, ndps_info, img_hash):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    # Report Data
+    data = [
+        [Paragraph("<b>FIELD DRUG SCREENING RECORD</b>", styles['Normal']), ""],
+        ["Status", "PRESUMPTIVE SCREENING"],
+        ["Timestamp (IST)", case_info['time']],
+        ["Officer ID", case_info['officer']],
+        ["Case Reference", case_info['case']],
+        ["------------------", "------------------"],
+        ["Detected Shade", color_data['name']],
+        ["HEX Code", color_data['hex']],
+        ["CIELAB Standards", f"L:{color_data['lab'][0]} a:{color_data['lab'][1]} b:{color_data['lab'][2]}"],
+        ["------------------", "------------------"],
+        ["Analysis Result", match_info],
+        ["NDPS Provision", ndps_info],
+        ["Record Hash (SHA-256)", img_hash],
+    ]
+    
+    table = Table(data, colWidths=[160, 320])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#002F6C")),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ('PADDING', (0,0), (-1,-1), 10),
+    ]))
+    
+    elements = [
+        Paragraph("<b>NARCOTICS CONTROL BUREAU</b>", styles['Title']),
+        Paragraph("<para align=center>Government of India</para>", styles['Normal']),
+        Spacer(1, 20),
+        table,
+        Spacer(1, 20),
+        Paragraph("<i>Note: This is a presumptive digital report. Confirmatory laboratory analysis is required for legal evidence.</i>", styles['Normal'])
+    ]
+    doc.build(elements)
+    return buffer.getvalue()
 
 # --- APP UI ---
 st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
@@ -93,10 +133,10 @@ camera_img = st.camera_input("Place the sample vial/strip in center")
 if camera_img:
     file_bytes = np.frombuffer(camera_img.getvalue(), np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    img_hash = hashlib.sha256(camera_img.getvalue()).hexdigest()[:16]
     
-    # --- REFINED COLOR EXTRACTION ---
+    # Extraction
     h, w, _ = img.shape
-    # Sample a 30x30 area from center
     roi = img[h//2-15:h//2+15, w//2-15:w//2+15]
     avg_bgr = np.mean(roi, axis=(0,1)) * lighting_boost
     avg_bgr = np.clip(avg_bgr, 0, 255)
@@ -106,7 +146,6 @@ if camera_img:
     hex_val = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
     
-    # --- UI DISPLAY ---
     st.write("### 2. Forensic Analysis")
     st.markdown(f"""
         <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_val};">
@@ -116,9 +155,9 @@ if camera_img:
         </div>
     """, unsafe_allow_html=True)
 
-    # --- REAGENT CHECK ---
     match_found = False
-    match_text = f"Universal shade detected as {u_name}. No reagent match."
+    match_text = "No drug reagent match."
+    ndps_provision = "N/A"
     
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f:
@@ -128,14 +167,15 @@ if camera_img:
             if t_lab:
                 dist = np.sqrt(np.sum((np.array(center_lab) - np.array(t_lab))**2))
                 if dist < v.get('tolerance_de', 25.0):
-                    match_text = f"Match found. Consistent with {v['target_compound']}."
+                    match_text = f"Consistent with {v['target_compound']}"
+                    ndps_provision = v.get('ndps_section', 'N/A')
                     st.success(f"⚖️ **POSS. MATCH:** {v['target_compound']}")
-                    st.info(f"📜 **NDPS Provision:** {v.get('ndps_section', 'N/A')}")
+                    st.info(f"📜 **NDPS Provision:** {ndps_provision}")
                     match_found = True
                     break
     
-    # --- VOICE ANNOUNCEMENT ---
-    speech = f"Detected shade is {u_name}. " + match_text
+    # Voice
+    speech = f"Detected shade is {u_name}. " + (f"Result is {match_text}" if match_found else "No drug match found.")
     talk_back(speech)
 
     col1, col2 = st.columns(2)
@@ -143,6 +183,17 @@ if camera_img:
         if st.button("🔊 Repeat Audio"):
             talk_back(speech)
     with col2:
-        st.button("📄 Generate Report", disabled=True) # Placeholder
+        # Prepare PDF data
+        case_info = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
+        color_data = {'name': u_name, 'hex': hex_val.upper(), 'lab': center_lab}
+        
+        pdf_bytes = generate_pdf(case_info, color_data, match_text, ndps_provision, img_hash)
+        
+        st.download_button(
+            label="📄 Generate Report",
+            data=pdf_bytes,
+            file_name=f"NCB_Report_{img_hash[:8]}.pdf",
+            mime="application/pdf"
+        )
 
     st.write("---")
