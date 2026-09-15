@@ -6,107 +6,185 @@ import json
 import os
 import pytz
 import webcolors
-import pandas as pd
 from datetime import datetime
 from io import BytesIO
 from sklearn.linear_model import LogisticRegression
 import streamlit.components.v1 as components
 
+# PDF Forensic Libraries
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+
 # --- 1. CONFIGURATION ---
 DB_FILE = "reagents.json"
-CSV_FILE = "drug_reagents.csv"
 IST = pytz.timezone('Asia/Kolkata')
-NCB_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/5/5a/Narcotics_Control_Bureau_logo.png/220px-Narcotics_Control_Bureau_logo.png"
+# Stable Logo Link
+NCB_LOGO = "https://raw.githubusercontent.com/streamlit/st-user-manual/master/NCB_Logo.png" # Standard placeholder or your own URL
 
 def get_india_time():
     return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
-# --- 2. DATASET & AI TRAINING (With Safeguards) ---
+def talk_back(text):
+    if text:
+        components.html(f"""<script>window.speechSynthesis.cancel(); var m=new SpeechSynthesisUtterance("{text}"); m.lang='en-IN'; m.rate=0.9; window.speechSynthesis.speak(m);</script>""", height=0)
+
+# --- 2. AI MODEL TRAINING (ROBUST) ---
 @st.cache_resource
 def train_ncb_ai():
-    # Load from reagents.json (created from your CSV)
-    if not os.path.exists(DB_FILE): return None, None
+    db = {}
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            try: db = json.load(f)
+            except: db = {}
+    
+    # FORCED STARTER KIT (If JSON is empty or file missing)
+    if len(db) < 2:
+        db = {
+            "Cocaine": {"target_compound": "Cocaine (Scott Reagent)", "target_lab": [38.0, 8.0, -48.0], "ndps": "Sec. 21"},
+            "Heroin": {"target_compound": "Heroin (Marquis Reagent)", "target_lab": [24.0, 32.0, -18.0], "ndps": "Sec. 21"},
+            "Meth": {"target_compound": "Methamphetamine (Marquis)", "target_lab": [48.0, 42.0, 45.0], "ndps": "Sec. 22"},
+            "Cannabis": {"target_compound": "Cannabis (Duquenois)", "target_lab": [28.0, 22.0, -28.0], "ndps": "Sec. 20"},
+            "LSD": {"target_compound": "LSD (Ehrlich)", "target_lab": [45.0, 38.0, -12.0], "ndps": "Sec. 22"},
+            "Neutral": {"target_compound": "No Match / Negative", "target_lab": [70.0, 0.0, 0.0], "ndps": "N/A"}
+        }
+
+    X, y, labels, ndps_map = [], [], [], {}
+    for key, data in db.items():
+        t_lab = data.get('target_lab')
+        if t_lab:
+            for _ in range(120): # Noise for shadows
+                noise = np.random.normal(0, 2.0, 3) 
+                X.append(np.array(t_lab) + noise)
+                y.append(len(labels))
+            ndps_map[len(labels)] = data.get('ndps_section', data.get('ndps', 'N/A'))
+            labels.append(data['target_compound'])
+    
+    model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
+    model.fit(X, y)
+    return model, (labels, ndps_map)
+
+# --- 3. COLOR ANALYTICS ---
+def get_universal_name(rgb):
+    r, g, b = [int(x) for x in rgb]
+    diff = max(r, g, b) - min(r, g, b)
+    if diff < 12: 
+        if r > 215: return "Off-White"
+        if r < 45: return "Charcoal"
+        return "Neutral Gray"
     try:
-        with open(DB_FILE, "r") as f: db = json.load(f)
-        X, y, labels, kit_map = [], [], [], {}
-        
-        # Add a "Neutral" class to the AI to prevent False Positives
-        # This teaches the AI what 'Normal objects' look like
-        neutral_colors = [[60,0,0], [20,0,0], [90,0,0]] # Grays/Whites/Blacks
-        for nc in neutral_colors:
-            for _ in range(50):
-                X.append(np.array(nc) + np.random.normal(0, 2, 3))
-                y.append(0)
-        labels.append("Neutral/No Drug")
+        min_dist = float('inf')
+        closest_name = "Custom Shade"
+        for hex_val, name in webcolors.CSS3_HEX_TO_NAMES.items():
+            r_c, g_c, b_c = webcolors.hex_to_rgb(hex_val)
+            dist = (r_c - r)**2 + (g_c - g)**2 + (b_c - b)**2
+            if dist < min_dist:
+                min_dist = dist
+                closest_name = name
+        return closest_name.title().replace('Grey', 'Gray')
+    except: return "Detected Color"
 
-        for key, data in db.items():
-            t_lab = data.get('target_lab')
-            if t_lab:
-                class_idx = len(labels)
-                for _ in range(150):
-                    noise = np.random.normal(0, 2.0, 3) 
-                    X.append(np.array(t_lab) + noise)
-                    y.append(class_idx)
-                labels.append(data['target_compound'])
-                kit_map[class_idx] = data['reagent']
-        
-        model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
-        model.fit(np.array(X), np.array(y))
-        return model, (labels, kit_map)
-    except: return None, None
+def rgb_to_lab_scaled(rgb):
+    pixel_lab = cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2Lab)[0][0]
+    return [round(float(pixel_lab[0]*(100/255)),1), round(float(pixel_lab[1]-128),1), round(float(pixel_lab[2]-128),1)]
 
-# --- 3. UI & LOGIC ---
-st.set_page_config(page_title="NCB AI Shield", page_icon="⚖️")
+def generate_pdf(case, color, result, conf, ndps, img_hash):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    data = [
+        [Paragraph("<b>FORENSIC FIELD RECORD</b>", styles['Normal']), ""],
+        ["TIMESTAMP", case['time']], ["OFFICER ID", case['officer']], ["CASE REF", case['case']],
+        ["DETECTED COLOR", color['name']], ["HEX/LAB", f"{color['hex']} / {color['lab']}"],
+        ["AI PREDICTION", result], ["CONFIDENCE", f"{conf:.1f}%"], ["NDPS PROVISION", ndps], ["EVIDENCE HASH", img_hash]
+    ]
+    table = Table(data, colWidths=[160, 320])
+    table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor("#002F6C")),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.5,colors.grey),('PADDING',(0,0),(-1,-1),10)]))
+    doc.build([Paragraph("<b>NCB DIGITAL COMPANION REPORT</b>", styles['Title']), Spacer(1,12), table])
+    return buffer.getvalue()
 
-# Professional Header
-st.markdown(f'<div style="background:#002F6C;padding:15px;border-radius:10px;text-align:center;border-bottom:4px solid #4E9F3D;"><img src="{NCB_LOGO}" width="60"><h2 style="color:white;margin:0;">NCB FIELD COMPANION</h2></div>', unsafe_allow_html=True)
+# --- 4. APP UI ---
+st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
+
+st.markdown("""
+    <style>
+    .stApp { background-color: #0E1117; }
+    .main-header { background-color: #002F6C; padding: 20px; border-radius: 10px; text-align: center; border-bottom: 4px solid #4E9F3D; margin-top: -55px;}
+    .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #002F6C; color: white; font-weight: bold; border: 1px solid #4E9F3D; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.markdown(f'<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1><p style="color:#4E9F3D; margin:0; font-weight:bold;">Forensic Intelligence Support</p></div>', unsafe_allow_html=True)
 
 model, meta = train_ncb_ai()
 
 with st.sidebar:
-    st.header("🛡️ Forensic Protocol")
-    # SAFEGUARD 1: Officer must select the kit they are using
-    all_kits = ["Marquis", "Scott", "Ehrlich", "Duquenois", "Mandelin", "Mecke"]
-    selected_kit = st.selectbox("Select Active Reagent Kit", all_kits)
-    st.warning(f"AI will only report matches valid for the {selected_kit} kit.")
+    st.header("📋 Case Details")
+    off_id = st.text_input("Officer ID", "NCB-DEL-101")
+    case_no = st.text_input("Case Reference", "F.No-" + datetime.now(IST).strftime("%Y/%m"))
     st.divider()
-    off_id = st.text_input("Officer ID", "NCB-DEL-442")
+    st.info("The AI removes subjectivity from visual reagent tests.")
 
+# --- CAMERA BLOCK ---
 cam_img = st.camera_input("SCAN TEST VIAL")
 
-if cam_img and model:
-    img = cv2.imdecode(np.frombuffer(cam_img.getvalue(), np.uint8), cv2.IMREAD_COLOR)
-    roi = img[img.shape[0]//2-15:img.shape[0]//2+15, img.shape[1]//2-15:img.shape[1]//2+15]
-    avg_rgb = np.mean(roi, axis=(0,1))[::-1]
+if cam_img:
+    img_bytes = cam_img.getvalue()
+    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+    img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
     
-    # Lab Conversion
-    pixel_lab = cv2.cvtColor(np.uint8([[avg_rgb]]), cv2.COLOR_RGB2Lab)[0][0]
-    lab = [round(float(pixel_lab[0]*(100/255)),1), round(float(pixel_lab[1]-128),1), round(float(pixel_lab[2]-128),1)]
+    # Visual Target Feedback
+    h, w, _ = img.shape
+    r_size = 25 # Box size
+    cx, cy = w//2, h//2
+    
+    # Create the Analysis Display Image
+    display_img = img.copy()
+    cv2.rectangle(display_img, (cx-r_size, cy-r_size), (cx+r_size, cy+r_size), (0, 255, 0), 2)
+    st.image(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB), caption="Sample Target Area (Green Box)")
+    
+    # Process Color from Target Box
+    roi = img[cy-r_size:cy+r_size, cx-r_size:cx+r_size]
+    avg_rgb = np.mean(roi, axis=(0,1))[::-1]
+    lab = rgb_to_lab_scaled(avg_rgb)
     hex_c = '#%02x%02x%02x' % (int(avg_rgb[0]), int(avg_rgb[1]), int(avg_rgb[2]))
+    u_name = get_universal_name(avg_rgb)
+    
+    # RESULTS UI
+    st.write("### 2. Forensic Analysis")
+    st.markdown(f"""
+        <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_c};">
+            <h1 style="margin:0; color:white; font-size: 2.5em;">{u_name}</h1>
+            <p style="margin:0; color:#AAA;"><b>HEX:</b> {hex_c.upper()} | <b>LAB:</b> {lab}</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-    # AI Prediction
-    probs = model.predict_proba([lab])[0]
-    idx = np.argmax(probs)
-    confidence = probs[idx] * 100
-    drug_name = meta[0][idx]
-    required_kit = meta[1].get(idx, "None")
+    # PREDICTION
+    res_drug, res_ndps, conf = "No Match", "N/A", 0.0
+    speech = f"Detected shade is {u_name}."
 
-    # SAFEGUARD 2: Kit Validation Logic
-    # The AI found a match, but is it the kit the officer is actually using?
-    is_valid_match = (required_kit == selected_kit) and (confidence > 75)
+    if model and meta:
+        probs = model.predict_proba([lab])[0]
+        idx = np.argmax(probs)
+        conf = probs[idx] * 100
+        if conf > 65:
+            res_drug, res_ndps = meta[0][idx], meta[1][idx]
+            st.success(f"⚖️ **AI MATCH:** {res_drug} ({conf:.1f}% Confidence)")
+            st.info(f"📜 **Provision:** {res_ndps}")
+            speech += f" Result consistent with {res_drug}."
+        else:
+            st.warning("Low confidence. No reagent match found.")
+            speech += " No matching drug reagent found."
+    
+    talk_back(speech)
 
-    st.write("### Analysis Result")
-    st.markdown(f'<div style="background:#1E1E1E;padding:20px;border-radius:10px;border-left:10px solid {hex_c};"><h1 style="color:white;margin:0;">{hex_c}</h1><p style="color:#AAA;">Lab: {lab}</p></div>', unsafe_allow_html=True)
-
-    if is_valid_match:
-        st.success(f"✅ **CONFIRMED MATCH:** {drug_name}")
-        st.metric("AI Confidence", f"{confidence:.1f}%")
-        msg = f"Match found. Consistent with {drug_name} using {selected_kit} reagent."
-    else:
-        # If it's blue but not the right kit, it's a "Neutral" result
-        st.error("❌ **NO FORENSIC MATCH**")
-        st.info(f"The detected color does not match the standard protocol for a {selected_kit} test.")
-        msg = f"No match found for {selected_kit} reagent."
-
-    # Talk Back
-    components.html(f'<script>window.speechSynthesis.cancel(); var m = new SpeechSynthesisUtterance("{msg}"); m.lang="en-IN"; window.speechSynthesis.speak(m);</script>', height=0)
+    st.write("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔊 Repeat Audio"): talk_back(speech)
+    with c2:
+        rep_bytes = generate_pdf({'time': get_india_time(), 'officer': off_id, 'case': case_no}, 
+                                {'name': u_name, 'hex': hex_c.upper(), 'lab': lab}, 
+                                res_drug, conf, res_ndps, img_hash)
+        st.download_button("📄 Download Report", rep_bytes, "NCB_Report.pdf", "application/pdf")
