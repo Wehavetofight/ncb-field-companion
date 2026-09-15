@@ -8,6 +8,7 @@ import pytz
 import webcolors
 from datetime import datetime
 from io import BytesIO
+import streamlit.components.v1 as components
 
 # PDF Libraries
 from reportlab.lib.pagesizes import letter
@@ -22,62 +23,37 @@ IST = pytz.timezone('Asia/Kolkata')
 def get_india_time():
     return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
-# --- IMPROVED COLOR NAMING ENGINE ---
+# --- VOICE LOGIC (JAVASCRIPT) ---
+def talk_back(text):
+    """Injects JavaScript to make the browser speak."""
+    components.html(f"""
+        <script>
+        var msg = new SpeechSynthesisUtterance("{text}");
+        window.speechSynthesis.speak(msg);
+        </script>
+    """, height=0)
+
+# --- COLOR NAMING ENGINE ---
 def get_universal_name(rgb):
-    """Finds the closest human-readable color name. Built to never fail."""
     try:
-        # 1. Convert numpy values to standard python integers
         r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
-        
-        # 2. Try using the webcolors library
         min_dist = float('inf')
         closest_name = None
-        
-        # Iterating through CSS3 colors
         for hex_val, name in webcolors.CSS3_HEX_TO_NAMES.items():
             r_c, g_c, b_c = webcolors.hex_to_rgb(hex_val)
-            # Euclidean distance
             dist = np.sqrt((r_c - r)**2 + (g_c - g)**2 + (b_c - b)**2)
             if dist < min_dist:
                 min_dist = dist
                 closest_name = name
-        
-        if closest_name:
-            return closest_name.title().replace('Grey', 'Gray')
-            
-    except Exception:
-        pass
-
-    # 3. FALLBACK: Simple hardcoded palette if the library fails
-    fallback_palette = {
-        "White": (255, 255, 255), "Black": (0, 0, 0), "Gray": (128, 128, 128),
-        "Silver": (192, 192, 192), "Red": (255, 0, 0), "Maroon": (128, 0, 0),
-        "Yellow": (255, 255, 0), "Olive": (128, 128, 0), "Lime": (0, 255, 0),
-        "Green": (0, 128, 0), "Aqua": (0, 255, 255), "Teal": (0, 128, 128),
-        "Blue": (0, 0, 255), "Navy": (0, 0, 128), "Fuchsia": (255, 0, 255),
-        "Purple": (128, 0, 128), "Orange": (255, 165, 0), "Brown": (165, 42, 42)
-    }
-    
-    r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
-    best_match = "Unknown Shade"
-    min_d = 1000000
-    for name, color in fallback_palette.items():
-        d = (color[0]-r)**2 + (color[1]-g)**2 + (color[2]-b)**2
-        if d < min_d:
-            min_d = d
-            best_match = name
-    return best_match
+        return closest_name.title().replace('Grey', 'Gray') if closest_name else "Unknown"
+    except:
+        return "Detected Shade"
 
 def rgb_to_lab_scaled(rgb):
-    """Converts RGB to CIELAB and scales to standard 0-100 range."""
     pixel_rgb = np.uint8([[rgb]])
     pixel_lab = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2Lab)
     l, a, b = pixel_lab[0][0].astype(float)
-    # Scale to standard Lab ranges
-    standard_l = l * (100/255)
-    standard_a = a - 128
-    standard_b = b - 128
-    return [round(standard_l, 1), round(standard_a, 1), round(standard_b, 1)]
+    return [round(l * (100/255), 1), round(a - 128, 1), round(b - 128, 1)]
 
 def calculate_de(lab1, lab2):
     return np.sqrt(np.sum((np.array(lab1) - np.array(lab2))**2))
@@ -89,7 +65,6 @@ def generate_pdf(case_info, color_data, match_info, img_hash):
     styles = getSampleStyleSheet()
     data = [
         ["FIELD SCREENING RECORD", ""],
-        ["Status", "PRESUMPTIVE ONLY"],
         ["Timestamp (IST)", case_info['time']],
         ["Officer ID", case_info['officer']],
         ["Case Reference", case_info['case']],
@@ -105,8 +80,7 @@ def generate_pdf(case_info, color_data, match_info, img_hash):
         ('GRID', (0,0), (-1,-1), 1, colors.black),
         ('PADDING', (0,0), (-1,-1), 10)
     ]))
-    elements = [Paragraph("NCB DIGITAL COMPANION REPORT", styles['Title']), Spacer(1,12), table]
-    doc.build(elements)
+    doc.build([Paragraph("NCB DIGITAL COMPANION REPORT", styles['Title']), Spacer(1,12), table])
     return buffer.getvalue()
 
 # --- APP UI ---
@@ -114,7 +88,7 @@ st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
 st.markdown("<style>div.stButton > button {width:100%; border-radius:10px; height:3.5em; font-weight:bold; background-color:#002F6C; color:white;}</style>", unsafe_allow_html=True)
 
 st.title("⚖️ NCB Field Companion")
-st.caption(f"Presumptive Screening Aid | {get_india_time()}")
+st.caption(f"Audio-Enabled Screening | {get_india_time()}")
 
 with st.sidebar:
     st.header("📋 Case Details")
@@ -133,13 +107,11 @@ if camera_img:
     img_float = img.astype(np.float32)
     avg_color = np.mean(img_float, axis=(0,1))
     img_balanced = np.clip(img_float * (np.mean(avg_color)/avg_color), 0, 255).astype(np.uint8)
-    
     h, w, _ = img_balanced.shape
-    roi = img_balanced[h//2-10:h//2+10, w//2-10:w//2+10] # Slightly larger sample area
+    roi = img_balanced[h//2-10:h//2+10, w//2-10:w//2+10]
     avg_bgr = np.mean(roi, axis=(0,1))
     center_rgb = avg_bgr[::-1]
     
-    # Calculate values
     center_lab = rgb_to_lab_scaled(center_rgb)
     hex_val = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
@@ -159,22 +131,31 @@ if camera_img:
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f:
             db = json.load(f)
-        
         for k, v in db.items():
             target_lab = v.get('target_lab')
-            if target_lab:
-                dist = calculate_de(center_lab, target_lab)
-                tolerance = v.get('tolerance_de', 25.0)
-                
-                if dist < tolerance:
-                    match_text = f"Consistent with {v['target_compound']}"
-                    st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
-                    st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
-                    match_found = True
-                    break
+            if target_lab and calculate_de(center_lab, target_lab) < 25.0:
+                match_text = f"Consistent with {v['target_compound']}"
+                st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
+                st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
+                match_found = True
+                break
     
     if not match_found:
-        st.warning("Result: Universal color recorded. No matching drug reagent in database.")
+        st.warning("Result: Universal color recorded. No matching drug reagent.")
+
+    # --- TALK BACK LOGIC ---
+    # Prepare the speech string
+    speech_string = f"Detected shade is {u_name}. "
+    if match_found:
+        speech_string += f"Result is consistent with {v['target_compound']}."
+    else:
+        speech_string += "No matching reagent found in database."
+    
+    # This automatically triggers the voice
+    talk_back(speech_string)
+
+    if st.button("🔊 Repeat Announcement"):
+        talk_back(speech_string)
 
     st.write("---")
     case_data = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
@@ -192,12 +173,6 @@ with st.expander("🛠️ Admin: Register Current Color"):
             if os.path.exists(DB_FILE):
                 with open(DB_FILE, "r") as f: current_db = json.load(f)
             entry_id = f"{new_reag}_{new_sub}".replace(" ", "_").lower()
-            current_db[entry_id] = {
-                "reagent": new_reag,
-                "target_compound": new_sub,
-                "target_lab": center_lab,
-                "tolerance_de": 25.0,
-                "ndps_section": new_ndps
-            }
+            current_db[entry_id] = {"reagent": new_reag, "target_compound": new_sub, "target_lab": center_lab, "tolerance_de": 25.0, "ndps_section": new_ndps}
             with open(DB_FILE, "w") as f: json.dump(current_db, f, indent=2)
-            st.success("Saved! Refresh the page to see the match.")
+            st.success("Saved! Refresh page.")
