@@ -5,3 +5,4 @@ reportlab
 pytz
 webcolors
 scikit-learn
+pyttsx3
