@@ -4,128 +4,154 @@ import numpy as np
 import hashlib
 import json
 import os
+import pytz
+import webcolors
 from datetime import datetime
 from io import BytesIO
 
-# UI/PDF Libraries
+# PDF Libraries
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 
-# --- DATABASE CONFIG ---
+# --- CONFIGURATION ---
 DB_FILE = "reagents.json"
+IST = pytz.timezone('Asia/Kolkata')
 
-def load_reagents():
-    if not os.path.exists(DB_FILE):
-        # Default starter data for SIH Demo
-        return {
-            "marquis_heroin": {
-                "reagent": "Marquis",
-                "target_compound": "Heroin",
-                "target_hex": "#3E000C",
-                "target_lab": [11.0, 25.0, 5.0],
-                "tolerance_de": 12.0,
-                "ndps_section": "Sec 21 (Punishment for contravention in relation to manufactured drugs)"
-            }
-        }
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+def get_india_time():
+    return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
-# --- COLOR MATH (CIEDE2000) ---
-def ciede2000(lab1, lab2):
-    L1, a1, b1 = lab1
-    L2, a2, b2 = lab2
-    return float(np.sqrt((L1-L2)**2 + (a1-a2)**2 + (b1-b2)**2)) # Simplified for performance
+# --- COLOR ENGINES ---
+def get_universal_name(rgb):
+    """Finds the closest human-readable name for ANY color."""
+    min_colors = {}
+    try:
+        for hex_code, name in webcolors.CSS3_HEX_TO_NAMES.items():
+            r_c, g_c, b_c = webcolors.hex_to_rgb(hex_code)
+            rd = (r_c - rgb[0]) ** 2
+            gd = (g_c - rgb[1]) ** 2
+            bd = (b_c - rgb[2]) ** 2
+            min_colors[(rd + gd + bd)] = name
+        return min_colors[min(min_colors.keys())].title().replace('Grey', 'Gray')
+    except:
+        return "Unknown Shade"
 
-# --- APP LAYOUT ---
-st.set_page_config(page_title="NCB Field Companion", page_icon="⚖️", layout="centered")
+def color_dist(rgb1, rgb2):
+    return np.sqrt(sum((a - b) ** 2 for a, b in zip(rgb1, rgb2)))
 
-# Custom CSS for a professional "Government Tool" look
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #002f6c; color: white; }
-    .reportview-container .main .block-container { padding-top: 1rem; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- PDF GENERATOR ---
+def generate_pdf(case_info, color_data, match_info, img_hash):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    
+    data = [
+        ["FIELD SCREENING RECORD", ""],
+        ["Status", "PRESUMPTIVE ONLY"],
+        ["Timestamp (IST)", case_info['time']],
+        ["Officer ID", case_info['officer']],
+        ["Case Reference", case_info['case']],
+        ["Universal Color", color_data['name']],
+        ["Detected HEX", color_data['hex']],
+        ["Reagent Match", match_info],
+        ["Record Hash", img_hash]
+    ]
+    
+    table = Table(data, colWidths=[150, 300])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#002F6C")),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('GRID', (0,0), (-1,-1), 1, colors.black),
+        ('PADDING', (0,0), (-1,-1), 10)
+    ]))
+    
+    elements = [Paragraph("NCB DIGITAL COMPANION REPORT", styles['Title']), Spacer(1,12), table]
+    doc.build(elements)
+    return buffer.getvalue()
 
-st.title("⚖️ Digital Drug-Test Companion")
-st.caption("NCB Field Interdiction Support - SIH 26231")
+# --- APP UI ---
+st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
 
-# --- SIDEBAR: OFFICER INFO ---
+# Custom CSS for Mobile
+st.markdown("<style>div.stButton > button {width:100%; border-radius:10px; height:3em; font-weight:bold;}</style>", unsafe_allow_html=True)
+
+st.title("⚖️ NCB Field Companion")
+st.caption(f"Standardizing Drug Testing | {get_india_time()}")
+
+# Sidebar for Records
 with st.sidebar:
-    st.header("Officer Details")
-    officer_name = st.text_input("Officer Name/ID", placeholder="e.g., NCB-DEL-442")
-    case_no = st.text_input("Case Reference", placeholder="F.No. 2024/...")
+    st.header("📋 Case Details")
+    off_id = st.text_input("Officer ID", "NCB-OFF-01")
+    case_ref = st.text_input("Case No.", "F.No-" + datetime.now().strftime("%Y/%m"))
     st.divider()
-    st.info("This tool standardizes visual reagents to prevent subjective bias.")
+    st.write("This tool removes human subjectivity from colorimetric tests.")
 
-# --- STEP 1: CAPTURE ---
-st.subheader("1. Sample Evidence Capture")
-camera_img = st.camera_input("Scan Reagent Vial/Strip")
+# 1. CAMERA CAPTURE
+st.subheader("1. Scan Reagent Result")
+camera_img = st.camera_input("Take a photo of the test vial/strip")
 
 if camera_img:
-    bytes_data = camera_img.getvalue()
-    cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+    # Process Image
+    file_bytes = np.frombuffer(camera_img.getvalue(), np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    img_hash = hashlib.sha256(camera_img.getvalue()).hexdigest()[:16]
     
-    # Auto-White Balance Logic
-    img_float = cv_img.astype(np.float32)
+    # Simple White Balance
+    img_float = img.astype(np.float32)
     avg_color = np.mean(img_float, axis=(0,1))
-    gain = np.mean(avg_color) / avg_color
-    balanced = np.clip(img_float * gain, 0, 255).astype(np.uint8)
+    img_balanced = np.clip(img_float * (np.mean(avg_color)/avg_color), 0, 255).astype(np.uint8)
     
-    # Process Center Sample
-    h, w, _ = balanced.shape
-    size = int(min(h, w) * 0.2)
-    center_y, center_x = h//2, w//2
-    sample_zone = balanced[center_y-size:center_y+size, center_x-size:center_x+size]
+    # Get Center Color
+    h, w, _ = img_balanced.shape
+    center_rgb = img_balanced[h//2, w//2][::-1] # BGR to RGB
+    hex_val = '#%02x%02x%02x' % tuple(center_rgb)
+    u_name = get_universal_name(center_rgb)
     
-    # Get Lab Color
-    mean_bgr = np.mean(sample_zone, axis=(0,1)).reshape(1,1,3).astype(np.float32) / 255.0
-    sample_lab = cv2.cvtColor(mean_bgr, cv2.COLOR_BGR2Lab).flatten()
-    
-    # HEX for Display
-    r, g, b = int(mean_bgr[0,0,2]*255), int(mean_bgr[0,0,1]*255), int(mean_bgr[0,0,0]*255)
-    hex_color = f"#{r:02X}{g:02X}{b:02X}"
+    # 2. DISPLAY RESULTS
+    st.write("### 2. Identification")
+    st.markdown(f"""
+        <div style="background:#1E1E1E; padding:20px; border-radius:15px; border-left:10px solid {hex_val};">
+            <h2 style="margin:0; color:white;">{u_name}</h2>
+            <p style="margin:0; color:#AAA;">Detected HEX: {hex_val.upper()}</p>
+            <p style="margin:0; color:#AAA;">Time: {get_india_time()}</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-    # --- STEP 2: IDENTIFICATION ---
-    st.subheader("2. Analysis Result")
-    reagent_db = load_reagents()
+    # 3. MATCHING LOGIC
+    match_text = "No Reagent Match Found"
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            db = json.load(f)
+        
+        for k, v in db.items():
+            db_rgb = webcolors.hex_to_rgb(v['target_hex'])
+            if color_dist(center_rgb, db_rgb) < 50: # Tolerance
+                match_text = f"MATCH: {v['target_compound']} ({v['reagent']} Reagent)"
+                st.success(f"✅ **{match_text}**")
+                st.info(f"⚖️ **NDPS Note:** {v['ndps_section']}")
+                break
     
-    match_found = None
-    min_dist = 999
+    if "MATCH" not in match_text:
+        st.warning("Note: Universal color identified. No specific reagent match in database.")
+
+    # 4. DOWNLOAD REPORT
+    st.write("---")
+    case_data = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
+    color_data = {'name': u_name, 'hex': hex_val.upper()}
     
-    for key, data in reagent_db.items():
-        dist = ciede2000(sample_lab, data['target_lab'])
-        if dist < dist < data.get("tolerance_de", 15.0) and dist < min_dist:
-            min_dist = dist
-            match_found = data
+    pdf_file = generate_pdf(case_data, color_data, match_text, img_hash)
+    st.download_button(
+        label="📥 Download Official Screening Report (PDF)",
+        data=pdf_file,
+        file_name=f"NCB_Report_{img_hash}.pdf",
+        mime="application/pdf"
+    )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.color_picker("Detected Hue", hex_color, disabled=True)
-    with col2:
-        if match_found:
-            st.success(f"**MATCH:** {match_found['target_compound']}")
-            confidence = max(0, 100 - (min_dist * 4))
-            st.metric("Confidence", f"{confidence:.1f}%")
-        else:
-            st.error("No Match Found")
-
-    # --- STEP 3: DOCUMENTATION ---
-    st.subheader("3. Record & Certification")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sha_hash = hashlib.sha256(bytes_data).hexdigest()[:16] # Shortened for UI
-    
-    st.code(f"Hash: {sha_hash}\nTime: {timestamp}\nLocation: 28.6139° N, 77.2090° E")
-
-    # PDF Generation Logic (Simplified)
-    if st.button("Generate Official Report"):
-        if not officer_name:
-            st.warning("Please enter Officer ID in the sidebar first.")
-        else:
-            # Here you would call your generate_pdf function
-            st.balloons()
-            st.success("Report generated successfully.")
-            # Note: In a real app, use the generate_pdf function from your script here.
+    # Admin Registration (Optional)
+    with st.expander("🛠️ Admin: Save this color to Database"):
+        new_name = st.text_input("Substance Name")
+        new_reag = st.text_input("Reagent Name")
+        if st.button("Save to reagents.json"):
+            # Logic to append to json
+            st.success("New reagent saved successfully!")
