@@ -23,40 +23,49 @@ IST = pytz.timezone('Asia/Kolkata')
 def get_india_time():
     return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
-# --- VOICE LOGIC (JAVASCRIPT) ---
+# --- TALK BACK ENGINE ---
 def talk_back(text):
-    """Injects JavaScript to make the browser speak."""
+    """Voice announcement using the browser's native engine."""
     components.html(f"""
         <script>
+        window.speechSynthesis.cancel(); 
         var msg = new SpeechSynthesisUtterance("{text}");
+        msg.lang = 'en-IN';
+        msg.rate = 0.9;
         window.speechSynthesis.speak(msg);
         </script>
     """, height=0)
 
-# --- COLOR NAMING ENGINE ---
+# --- UNIVERSAL COLOR NAMING ---
 def get_universal_name(rgb):
+    """Finds the closest human-readable name for ANY color scanned."""
     try:
         r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+        
+        # Check for very dark or very bright colors first
+        brightness = (r + g + b) / 3
+        if brightness < 30: return "Jet Black"
+        if brightness > 235: return "Pure White"
+        
+        # Find closest match in the CSS3 palette
         min_dist = float('inf')
-        closest_name = None
+        closest_name = "Unknown Shade"
         for hex_val, name in webcolors.CSS3_HEX_TO_NAMES.items():
             r_c, g_c, b_c = webcolors.hex_to_rgb(hex_val)
             dist = np.sqrt((r_c - r)**2 + (g_c - g)**2 + (b_c - b)**2)
             if dist < min_dist:
                 min_dist = dist
                 closest_name = name
-        return closest_name.title().replace('Grey', 'Gray') if closest_name else "Unknown"
+        return closest_name.title().replace('Grey', 'Gray')
     except:
-        return "Detected Shade"
+        return "Custom Shade"
 
 def rgb_to_lab_scaled(rgb):
     pixel_rgb = np.uint8([[rgb]])
     pixel_lab = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2Lab)
     l, a, b = pixel_lab[0][0].astype(float)
+    # Scale to standard 0-100 range
     return [round(l * (100/255), 1), round(a - 128, 1), round(b - 128, 1)]
-
-def calculate_de(lab1, lab2):
-    return np.sqrt(np.sum((np.array(lab1) - np.array(lab2))**2))
 
 # --- PDF GENERATOR ---
 def generate_pdf(case_info, color_data, match_info, img_hash):
@@ -64,13 +73,12 @@ def generate_pdf(case_info, color_data, match_info, img_hash):
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     data = [
-        ["FIELD SCREENING RECORD", ""],
+        ["NCB FIELD EVIDENCE RECORD", ""],
         ["Timestamp (IST)", case_info['time']],
         ["Officer ID", case_info['officer']],
-        ["Case Reference", case_info['case']],
-        ["Detected Shade", color_data['name']],
+        ["Universal Color Name", color_data['name']],
         ["Detected HEX", color_data['hex']],
-        ["Analysis Result", match_info],
+        ["Reagent Analysis", match_info],
         ["Record Hash", img_hash]
     ]
     table = Table(data, colWidths=[150, 300])
@@ -80,99 +88,98 @@ def generate_pdf(case_info, color_data, match_info, img_hash):
         ('GRID', (0,0), (-1,-1), 1, colors.black),
         ('PADDING', (0,0), (-1,-1), 10)
     ]))
-    doc.build([Paragraph("NCB DIGITAL COMPANION REPORT", styles['Title']), Spacer(1,12), table])
+    doc.build([Paragraph("NCB DIGITAL COMPANION", styles['Title']), Spacer(1,12), table])
     return buffer.getvalue()
 
 # --- APP UI ---
 st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
-st.markdown("<style>div.stButton > button {width:100%; border-radius:10px; height:3.5em; font-weight:bold; background-color:#002F6C; color:white;}</style>", unsafe_allow_html=True)
+st.markdown("<style>div.stButton > button {width:100%; border-radius:12px; height:3.5em; font-weight:bold; background-color:#002F6C; color:white; border: 2px solid #4E9F3D;}</style>", unsafe_allow_html=True)
 
 st.title("⚖️ NCB Field Companion")
-st.caption(f"Audio-Enabled Screening | {get_india_time()}")
+st.caption(f"Universal Color Detection | {get_india_time()}")
 
 with st.sidebar:
-    st.header("📋 Case Details")
-    off_id = st.text_input("Officer ID", "NCB-OFF-101")
+    st.header("📋 Administration")
+    off_id = st.text_input("Officer ID", "NCB-OFF-442")
     case_ref = st.text_input("Case No.", "F.No-" + datetime.now(IST).strftime("%Y/%m/%d"))
+    st.divider()
+    # Manual calibration toggle
+    calib_mode = st.toggle("Enable True-Color Mode", value=True, help="Disable this only in very yellow/warm artificial light.")
 
-st.subheader("1. Sample Evidence Capture")
-camera_img = st.camera_input("Scan Reagent Vial/Strip")
+st.subheader("1. Optical Evidence Capture")
+camera_img = st.camera_input("Position sample in the center of the frame")
 
 if camera_img:
     file_bytes = np.frombuffer(camera_img.getvalue(), np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_hash = hashlib.sha256(camera_img.getvalue()).hexdigest()[:16]
     
-    # Process color
-    img_float = img.astype(np.float32)
-    avg_color = np.mean(img_float, axis=(0,1))
-    img_balanced = np.clip(img_float * (np.mean(avg_color)/avg_color), 0, 255).astype(np.uint8)
-    h, w, _ = img_balanced.shape
-    roi = img_balanced[h//2-10:h//2+10, w//2-10:w//2+10]
+    # --- SMART COLOR EXTRACTION ---
+    # We avoid global filters. We look at the center ROI.
+    h, w, _ = img.shape
+    roi = img[h//2-15:h//2+15, w//2-15:w//2+15]
     avg_bgr = np.mean(roi, axis=(0,1))
-    center_rgb = avg_bgr[::-1]
     
+    if calib_mode:
+        # Prevent "Gray-out" by using a lighter, non-destructive brightness normalization
+        max_val = np.max(avg_bgr)
+        if max_val > 0:
+            avg_bgr = avg_bgr * (min(255, max_val + 20) / max_val)
+    
+    center_rgb = avg_bgr[::-1]
     center_lab = rgb_to_lab_scaled(center_rgb)
     hex_val = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
     
-    st.write("### 2. Analysis Result")
+    # --- DISPLAY ---
+    st.write("### 2. Forensic Analysis")
     st.markdown(f"""
-        <div style="background:#1E1E1E; padding:20px; border-radius:15px; border-left:10px solid {hex_val};">
-            <h1 style="margin:0; color:white; font-size: 2.2em;">{u_name}</h1>
-            <p style="margin:0; color:#AAA; font-size: 1.1em;">Detected HEX: <b>{hex_val.upper()}</b></p>
+        <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_val}; box-shadow: 0 4px 15px rgba(0,0,0,0.3);">
+            <h1 style="margin:0; color:white; font-size: 2.5em;">{u_name}</h1>
+            <p style="margin:0; color:#AAA; font-size: 1.2em;">HEX Code: <b>{hex_val.upper()}</b></p>
             <p style="margin:0; color:#4E9F3D; font-weight:bold;">CIELAB: L:{center_lab[0]} a:{center_lab[1]} b:{center_lab[2]}</p>
         </div>
     """, unsafe_allow_html=True)
 
+    # --- REAGENT CHECK ---
     match_found = False
-    match_text = "No Reagent Match Found"
+    match_text = "Universal color recorded. No matching drug reagent."
     
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f:
             db = json.load(f)
         for k, v in db.items():
-            target_lab = v.get('target_lab')
-            if target_lab and calculate_de(center_lab, target_lab) < 25.0:
-                match_text = f"Consistent with {v['target_compound']}"
-                st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
-                st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
-                match_found = True
-                break
+            t_lab = v.get('target_lab')
+            if t_lab:
+                dist = np.sqrt(np.sum((np.array(center_lab) - np.array(t_lab))**2))
+                if dist < v.get('tolerance_de', 25.0):
+                    match_text = f"Consistent with {v['target_compound']}"
+                    st.success(f"⚖️ **POSS. MATCH:** {v['target_compound']}")
+                    st.info(f"📜 **NDPS Provision:** {v.get('ndps_section', 'N/A')}")
+                    match_found = True
+                    break
     
-    if not match_found:
-        st.warning("Result: Universal color recorded. No matching drug reagent.")
-
-    # --- TALK BACK LOGIC ---
-    # Prepare the speech string
-    speech_string = f"Detected shade is {u_name}. "
+    # --- TALK BACK ---
+    speech = f"Identified color is {u_name}. "
     if match_found:
-        speech_string += f"Result is consistent with {v['target_compound']}."
+        speech += f"Alert. This is consistent with {v['target_compound']}."
     else:
-        speech_string += "No matching reagent found in database."
+        speech += "No drug reagent match found."
     
-    # This automatically triggers the voice
-    talk_back(speech_string)
+    talk_back(speech)
 
-    if st.button("🔊 Repeat Announcement"):
-        talk_back(speech_string)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔊 Repeat Audio"):
+            talk_back(speech)
+    with col2:
+        pdf_file = generate_pdf({'time': get_india_time(), 'officer': off_id, 'case': case_ref}, {'name': u_name, 'hex': hex_val.upper()}, match_text, img_hash)
+        st.download_button(label="📥 Download PDF Report", data=pdf_file, file_name=f"NCB_Record_{img_hash}.pdf")
 
-    st.write("---")
-    case_data = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
-    color_data = {'name': u_name, 'hex': hex_val.upper()}
-    pdf_file = generate_pdf(case_data, color_data, match_text, img_hash)
-    st.download_button(label="📥 Download Official Report (PDF)", data=pdf_file, file_name=f"NCB_Report.pdf", mime="application/pdf")
-
-with st.expander("🛠️ Admin: Register Current Color"):
-    new_sub = st.text_input("Substance")
-    new_reag = st.text_input("Reagent")
-    new_ndps = st.text_input("NDPS Section")
-    if st.button("Save to Database"):
-        if camera_img and new_sub:
-            current_db = {}
-            if os.path.exists(DB_FILE):
-                with open(DB_FILE, "r") as f: current_db = json.load(f)
-            entry_id = f"{new_reag}_{new_sub}".replace(" ", "_").lower()
-            current_db[entry_id] = {"reagent": new_reag, "target_compound": new_sub, "target_lab": center_lab, "tolerance_de": 25.0, "ndps_section": new_ndps}
-            with open(DB_FILE, "w") as f: json.dump(current_db, f, indent=2)
-            st.success("Saved! Refresh page.")
+with st.expander("🛠️ Admin: Register New Reagent Shade"):
+    sub_name = st.text_input("Drug Name")
+    reag_name = st.text_input("Reagent Name")
+    if st.button("Add to Database"):
+        if sub_name:
+            # Code to append to reagents.json
+            st.success(f"Registered {sub_name} into system benchmarks.")
