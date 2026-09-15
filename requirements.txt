@@ -2,8 +2,8 @@ streamlit
 opencv-python-headless
 numpy
 pandas
-scikit-learn
-Pillow
 reportlab
 pytz
-pyttsx3
+webcolors
+scikit-learn
+Pillow
