@@ -1,37 +1,66 @@
 {
-  "marquis_heroin": {
+  "Marquis_Heroin": {
     "reagent": "Marquis",
     "target_compound": "Heroin",
     "target_lab": [11.0, 25.0, 5.0],
-    "ndps_section": "Sec 21",
-    "tolerance_de": 22.0
+    "ndps_section": "Sec. 21",
+    "source": "UNODC/DanceSafe",
+    "visual": "Purple / Reddish-Purple"
   },
-  "scott_cocaine": {
+  "Scott_Cocaine": {
     "reagent": "Scott",
-    "target_compound": "Cocaine",
+    "target_compound": "Cocaine HCl",
     "target_lab": [38.0, 8.0, -48.0],
-    "ndps_section": "Sec 21",
-    "tolerance_de": 25.0
+    "ndps_section": "Sec. 21",
+    "source": "UNODC",
+    "visual": "Bright Blue"
   },
-  "marquis_meth": {
+  "Marquis_MDMA": {
     "reagent": "Marquis",
+    "target_compound": "MDMA (Ecstasy)",
+    "target_lab": [5.0, 0.0, -2.0],
+    "ndps_section": "Sec. 22",
+    "source": "DanceSafe",
+    "visual": "Black / Dark Purple"
+  },
+  "Simon_Meth": {
+    "reagent": "Simon's",
     "target_compound": "Methamphetamine",
-    "target_lab": [48.0, 42.0, 45.0],
-    "ndps_section": "Sec 22",
-    "tolerance_de": 22.0
+    "target_lab": [45.0, -4.0, -45.0],
+    "ndps_section": "Sec. 22",
+    "source": "DanceSafe",
+    "visual": "Bright Blue"
   },
-  "duquenois_cannabis": {
+  "Marquis_Amphetamine": {
+    "reagent": "Marquis",
+    "target_compound": "Amphetamine",
+    "target_lab": [55.0, 35.0, 50.0],
+    "ndps_section": "Sec. 22",
+    "source": "UNODC",
+    "visual": "Orange to Brown"
+  },
+  "Duquenois_THC": {
     "reagent": "Duquenois-Levine",
-    "target_compound": "Cannabis",
+    "target_compound": "Cannabis / Hashish",
     "target_lab": [28.0, 22.0, -28.0],
-    "ndps_section": "Sec 20",
-    "tolerance_de": 24.0
+    "ndps_section": "Sec. 20",
+    "source": "UNODC",
+    "visual": "Indigo Violet Layer"
   },
-  "mandelin_ketamine": {
-    "reagent": "Mandelin",
-    "target_compound": "Ketamine",
-    "target_lab": [55.0, 25.0, 65.0],
-    "ndps_section": "Sec 22",
-    "tolerance_de": 20.0
+  "Ehrlich_LSD": {
+    "reagent": "Ehrlich",
+    "target_compound": "LSD / Indoles",
+    "target_lab": [45.0, 38.0, -12.0],
+    "ndps_section": "Sec. 22",
+    "source": "DanceSafe",
+    "visual": "Purple / Violet"
+  },
+  "Mecke_Opiates": {
+    "reagent": "Mecke",
+    "target_compound": "Morphine / Codeine",
+    "target_lab": [35.0, -18.0, 15.0],
+    "ndps_section": "Sec. 21",
+    "source": "UNODC",
+    "visual": "Blue-Green"
   }
 }
