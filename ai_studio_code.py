@@ -18,7 +18,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ============================================================
-# 1. CORE CONFIGURATION
+# 1. CORE CONFIGURATION & TIME
 # ============================================================
 IST = pytz.timezone('Asia/Kolkata')
 NCB_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/5/5a/Narcotics_Control_Bureau_logo.png/220px-Narcotics_Control_Bureau_logo.png"
@@ -27,54 +27,50 @@ def get_india_time():
     return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
 # ============================================================
-# 2. THE FLASH/TORCH CONTROL (JavaScript)
+# 2. VOICE ENGINE
 # ============================================================
-def torch_control(state):
-    # This script tries to find the camera track and toggle the 'torch' capability
-    val = "true" if state else "false"
-    components.html(f"""
-        <script>
-        async function toggleFlash() {{
-            try {{
-                const stream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode: "environment" }} }});
-                const track = stream.getVideoTracks()[0];
-                const capabilities = track.getCapabilities();
-                if (capabilities.torch) {{
-                    await track.applyConstraints({{ advanced: [{{ torch: {val} }}] }});
-                }}
-            }} catch (e) {{ console.log("Flash not accessible"); }}
-        }}
-        toggleFlash();
-        </script>
-    """, height=0)
+def talk_back(text):
+    if text:
+        components.html(f"""
+            <script>
+            window.speechSynthesis.cancel(); 
+            var msg = new SpeechSynthesisUtterance("{text}");
+            msg.lang = 'en-IN';
+            msg.rate = 0.95;
+            window.speechSynthesis.speak(msg);
+            </script>
+        """, height=0)
 
 # ============================================================
-# 3. AI MODEL (Enhanced with better Neutral detection)
+# 3. AI MODEL (With Strong Neutral Class for Shirts/Walls)
 # ============================================================
 @st.cache_resource
 def train_ncb_ai():
+    # SIH Master Dataset
     db = {
-        "Cocaine": {"target_lab": [38, 8, -48], "ndps": "Sec. 21 (Cocaine)"},
-        "Heroin": {"target_lab": [24, 32, -18], "ndps": "Sec. 21 (Opiates)"},
-        "Methamphetamine": {"target_lab": [48, 42, 45], "ndps": "Sec. 22 (Psychotropic)"},
-        "Cannabis/THC": {"target_lab": [28, 22, -28], "ndps": "Sec. 20 (Cannabis)"},
-        "LSD": {"target_lab": [45, 38, -12], "ndps": "Sec. 22 (Psychotropic)"}
+        "Cocaine": {"lab": [38, 8, -48], "ndps": "Sec. 21 (Cocaine)"},
+        "Heroin": {"lab": [24, 32, -18], "ndps": "Sec. 21 (Opiates)"},
+        "Methamphetamine": {"lab": [48, 42, 45], "ndps": "Sec. 22 (Psychotropic)"},
+        "Cannabis/THC": {"lab": [28, 22, -28], "ndps": "Sec. 20 (Cannabis)"},
+        "LSD": {"lab": [45, 38, -12], "ndps": "Sec. 22 (Psychotropic)"}
     }
+    
     X, y, labels, ndps_map = [], [], [], {}
     
-    # NEUTRAL CLASS (Class 0) - Heavily weighted to prevent Shirt/Wall matches
-    # We add common "non-drug" colors: White, Gray, Black, Beige (Skin), Blue (Jeans)
-    neutrals = [[70,0,0], [95,0,0], [20,0,0], [50,5,5], [40,10,-20]] 
+    # CLASS 0: THE NEUTRAL DEFENSE (Prevents shirt/wall matches)
+    # We train the AI on common background shades: White, Gray, Skin, and Fabric colors
+    neutrals = [[70,0,0], [95,0,0], [20,0,0], [50,5,5], [40,10,-20], [85,2,10]] 
     for n_color in neutrals:
-        for _ in range(200): # More samples for the neutral class
+        for _ in range(250): # Heavy weighting for neutrals
             X.append(np.array(n_color) + np.random.normal(0, 2.5, 3))
             y.append(0)
-    labels.append("Neutral / Background")
+    labels.append("Neutral / No Drug Detected")
 
+    # Load Drug Classes
     for key, data in db.items():
         idx = len(labels)
         for _ in range(150):
-            X.append(np.array(data['target_lab']) + np.random.normal(0, 2.0, 3))
+            X.append(np.array(data['lab']) + np.random.normal(0, 2.0, 3))
             y.append(idx)
         ndps_map[idx] = data['ndps']
         labels.append(key)
@@ -84,19 +80,19 @@ def train_ncb_ai():
     return model, (labels, ndps_map)
 
 # ============================================================
-# 4. COLOR NAMING ENGINE
+# 4. COLOR NAMING ENGINE (Forensic Palette)
 # ============================================================
 def get_universal_name(rgb):
     r, g, b = [int(x) for x in rgb]
     diff = max(r, g, b) - min(r, g, b)
     if diff < 15: return "Neutral Gray"
-    
+
     forensic_colors = {
         "Crimson Red": (153, 0, 0), "Deep Maroon": (80, 0, 0), "Blood Orange": (255, 69, 0),
-        "Amber": (255, 191, 0), "Forest Green": (34, 139, 34), "Cobalt Blue": (0, 71, 171),
+        "Golden Amber": (255, 191, 0), "Forest Green": (34, 139, 34), "Cobalt Blue": (0, 71, 171),
         "Midnight Blue": (25, 25, 112), "Deep Purple": (48, 25, 52), "Violet": (138, 43, 226)
     }
-    best_name, min_dist = "Custom Color", float('inf')
+    best_name, min_dist = "Custom Shade", float('inf')
     for name, c_rgb in forensic_colors.items():
         dist = np.sqrt((c_rgb[0]-r)**2 + (c_rgb[1]-g)**2 + (c_rgb[2]-b)**2)
         if dist < min_dist: min_dist = dist; best_name = name
@@ -107,10 +103,34 @@ def rgb_to_lab_scaled(rgb):
     return [round(float(pixel_lab[0]*(100/255)),1), round(float(pixel_lab[1]-128),1), round(float(pixel_lab[2]-128),1)]
 
 # ============================================================
-# 5. APP UI
+# 5. PDF GENERATOR
 # ============================================================
-st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
+def generate_forensic_report(case_info, color_data, result, conf, ndps, img_hash):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    data = [
+        [Paragraph("<b>FIELD EVIDENCE RECORD</b>", styles['Normal']), ""],
+        ["TIMESTAMP (IST)", case_info['time']], ["OFFICER ID", case_info['officer']],
+        ["CASE REF", case_info['case']], ["------------------", "------------------"],
+        ["DETECTED COLOR", color_data['name']], ["HEX / CIELAB", f"{color_data['hex']} / {color_data['lab']}"],
+        ["AI PREDICTION", result], ["CONFIDENCE", f"{conf:.1f}%"], ["NDPS STATUTE", ndps],
+        ["EVIDENCE HASH", img_hash],
+    ]
+    table = Table(data, colWidths=[160, 320])
+    table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor("#002F6C")), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('PADDING', (0,0), (-1,-1), 10)]))
+    doc.build([Paragraph("<b>NARCOTICS CONTROL BUREAU</b>", styles['Title']), Spacer(1,12), table])
+    return buffer.getvalue()
 
+# ============================================================
+# 6. APP UI & LOGIC
+# ============================================================
+st.set_page_config(page_title="NCB AI Companion", page_icon="⚖️")
+
+# Initialize speech variable to prevent NameError
+speech = ""
+
+# CUSTOM STYLING (Hides Streamlit UI for an 'App' look)
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; }
@@ -119,23 +139,22 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown(f'<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1><p style="color:#4E9F3D; margin:0; font-weight:bold;">Forensic Intelligence Unit</p></div>', unsafe_allow_html=True)
+# THE SOFTWARE FLASH (Safe way to light up the vial without crashing camera)
+use_software_flash = st.sidebar.toggle("💡 Enable Software Flash")
+if use_software_flash:
+    st.markdown("""<style> .stApp { background-color: white !important; } .main-header { background-color: #f0f0f0; } h1, h2, h3, p { color: black !important; } </style>""", unsafe_allow_html=True)
+    st.sidebar.info("UI is now White to provide light for the sample.")
+
+st.markdown(f'<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1><p style="color:#4E9F3D; margin:0; font-weight:bold;">Forensic Intelligence Support</p></div>', unsafe_allow_html=True)
 
 model, meta = train_ncb_ai()
 
 with st.sidebar:
-    st.header("⚙️ Device Controls")
-    # THE FLASH OPTION
-    flash_on = st.toggle("🔦 Flashlight (Torch)")
-    if flash_on:
-        torch_control(True)
-    else:
-        torch_control(False)
-        
-    st.divider()
     st.header("📋 Case Administration")
-    off_id = st.text_input("Officer ID", "NCB-OFF-442")
+    off_id = st.text_input("Officer ID", "NCB-DEL-101")
     case_no = st.text_input("Case Reference", "F.No-2024/09")
+    st.divider()
+    st.write(f"Standard Time (IST): {get_india_time()}")
 
 st.subheader("1. Sample Evidence Capture")
 cam_img = st.camera_input("SCAN REAGENT VIAL")
@@ -143,38 +162,54 @@ cam_img = st.camera_input("SCAN REAGENT VIAL")
 if cam_img:
     img_bytes = cam_img.getvalue()
     img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+    img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
     
     # Process Center Area
     h, w, _ = img.shape
     roi = img[h//2-15:h//2+15, w//2-15:w//2+15]
     avg_rgb = np.mean(roi, axis=(0,1))[::-1]
+    
     lab = rgb_to_lab_scaled(avg_rgb)
     hex_c = '#%02x%02x%02x' % (int(avg_rgb[0]), int(avg_rgb[1]), int(avg_rgb[2]))
     u_name = get_universal_name(avg_rgb)
     
     st.write("### 2. Forensic Analysis")
-    st.markdown(f'<div style="background:#1E1E1E;padding:25px;border-radius:15px;border-left:12px solid {hex_c};"><h1 style="margin:0; color:white;">{u_name}</h1><p style="margin:0; color:#AAA;">HEX: {hex_c.upper()} | LAB: {lab}</p></div>', unsafe_allow_html=True)
+    st.markdown(f"""
+        <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_c};">
+            <h1 style="margin:0; color:white; font-size: 2.5em;">{u_name}</h1>
+            <p style="margin:0; color:#AAA;"><b>HEX:</b> {hex_c.upper()} | <b>LAB:</b> {lab}</p>
+        </div>
+    """, unsafe_allow_html=True)
 
     # Prediction
+    res_drug, res_ndps, conf = "No Match", "N/A", 0.0
+    speech = f"Detected shade is {u_name}."
+
     if model and meta:
         probs = model.predict_proba([lab])[0]
         idx = np.argmax(probs)
         conf = probs[idx] * 100
         
-        if idx == 0: # This is the neutral class (Shirt/Wall fix)
+        if idx == 0: # Neutral detection
             st.warning("⚠️ RESULT: No drug reagent detected (Background Neutral).")
-            speech = "No drug detected in the sample."
+            speech += " No drug match found."
         elif conf > 75:
-            res_drug = meta[0][idx]
+            res_drug, res_ndps = meta[0][idx], meta[1][idx]
             st.success(f"✅ AI MATCH: {res_drug} ({conf:.1f}% Confidence)")
-            st.info(f"📜 Statute: {meta[1][idx]}")
-            speech = f"Analysis complete. Probability of {res_drug} is {conf:.0f} percent."
+            st.info(f"📜 Statute: {res_ndps}")
+            speech += f" Result consistent with {res_drug} at {conf:.0f} percent confidence."
         else:
             st.warning("Inconclusive result. Low AI confidence.")
-            speech = "Result is inconclusive."
+            speech += " Result is inconclusive."
     
-    # Talk Back
-    components.html(f'<script>window.speechSynthesis.cancel(); var m = new SpeechSynthesisUtterance("{speech}"); m.lang="en-IN"; window.speechSynthesis.speak(m);</script>', height=0)
+    talk_back(speech)
 
-    if st.button("🔊 Repeat Audio"):
-        components.html(f'<script>window.speechSynthesis.cancel(); var m = new SpeechSynthesisUtterance("{speech}"); m.lang="en-IN"; window.speechSynthesis.speak(m);</script>', height=0)
+    st.write("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔊 Repeat Audio"): talk_back(speech)
+    with c2:
+        pdf_bytes = generate_forensic_report({'time': get_india_time(), 'officer': off_id, 'case': case_no}, 
+                                             {'name': u_name, 'hex': hex_c.upper(), 'lab': lab}, 
+                                             res_drug, conf, res_ndps, img_hash)
+        st.download_button("📄 Generate Report", pdf_bytes, "NCB_Report.pdf", "application/pdf")
