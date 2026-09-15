@@ -1,182 +1,156 @@
 import streamlit as st
 import cv2
 import numpy as np
-import hashlib
 import json
-import os
-import pytz
-import webcolors
+import hashlib
+import tempfile
 from datetime import datetime
-from io import BytesIO
-from sklearn.linear_model import LogisticRegression
-import streamlit.components.v1 as components
-
-# PDF Forensic Libraries
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+import pytz
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Image
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+import pyttsx3
+ ---------------- PAGE ----------------
+st.set_page_config(page_title="NCB Field Companion",
+                   page_icon="🛡️",
+                   layout="wide")
 
-# --- 1. CONFIGURATION ---
-DB_FILE = "reagents.json"
-IST = pytz.timezone('Asia/Kolkata')
+st.title("🛡️ NCB FIELD COMPANION")
+st.caption("AI Presumptive Drug Identification Tool")
 
-def get_india_time():
-    return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
+# Prevent repeated speech
+if "spoken" not in st.session_state:
+    st.session_state.spoken = False
 
-# --- 2. HARDWARE & SECURITY CONTROLS (JAVASCRIPT) ---
-def inject_hardware_controls(torch_on):
-    """
-    1. Controls the Flashlight (Torch) via Web Hardware API.
-    2. Monitors app switching (Visibility API) to shut down camera.
-    """
-    torch_js = "true" if torch_on else "false"
-    
-    components.html(f"""
-        <script>
-        // 1. FLASHLIGHT CONTROL
-        async function toggleTorch(state) {{
-            try {{
-                const stream = await navigator.mediaDevices.getUserMedia({{ video: {{ facingMode: "environment" }} }});
-                const track = stream.getVideoTracks()[0];
-                const capabilities = track.getCapabilities();
-                if (capabilities.torch) {{
-                    await track.applyConstraints({{ advanced: [{{ torch: state }}] }});
-                }}
-            }} catch (e) {{ console.log("Flashlight not supported or permission denied"); }}
-        }}
-        
-        // Apply torch state
-        toggleTorch({torch_js});
+# Load reagent database
+with open("reagents.json", "r") as f:
+    reagents = json.load(f)
 
-        // 2. APP SWITCH AUTO-SHUTDOWN
-        document.addEventListener("visibilitychange", () => {{
-            if (document.visibilityState === 'hidden') {{
-                // Force stop all camera streams if user switches apps
-                navigator.mediaDevices.getUserMedia({{video: true}}).then(stream => {{
-                    stream.getTracks().forEach(track => track.stop());
-                }});
-                window.location.reload(); // Refresh to ensure clean state
-            }}
-        }});
-        </script>
-    """, height=0)
+# Text-to-Speech
+def talk_back(text):
+    if st.session_state.spoken:
+        return
+    engine = pyttsx3.init()
+    engine.say(text)
+    engine.runAndWait()
+    st.session_state.spoken = True
 
-# --- 3. AI MODEL TRAINING ---
-@st.cache_resource
-def train_ncb_ai():
-    db = {
-        "Cocaine": {"target_compound": "Cocaine (Scott Reagent)", "target_lab": [38.0, 8.0, -48.0], "ndps": "Sec. 21"},
-        "Heroin": {"target_compound": "Heroin (Marquis Reagent)", "target_lab": [24.0, 32.0, -18.0], "ndps": "Sec. 21"},
-        "Meth": {"target_compound": "Methamphetamine (Marquis)", "target_lab": [48.0, 42.0, 45.0], "ndps": "Sec. 22"},
-        "Cannabis": {"target_compound": "Cannabis (Duquenois)", "target_lab": [28.0, 22.0, -28.0], "ndps": "Sec. 20"},
-        "Neutral": {"target_compound": "No Match / Negative", "target_lab": [70.0, 0.0, 0.0], "ndps": "N/A"}
-    }
-    try:
-        X, y, labels, ndps_map = [], [], [], {}
-        for key, data in db.items():
-            t_lab = data.get('target_lab')
-            class_idx = len(labels)
-            for _ in range(120):
-                noise = np.random.normal(0, 2.0, 3) 
-                X.append(np.array(t_lab) + noise)
-                y.append(class_idx)
-            ndps_map[class_idx] = data.get('ndps', 'N/A')
-            labels.append(data['target_compound'])
-        model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
-        model.fit(np.array(X), np.array(y))
-        return model, (labels, ndps_map)
-    except: return None, None
+# RGB → LAB
+def rgb_to_lab(rgb):
+    rgb = np.uint8([[rgb]])
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+    return lab[0][0]
 
-# --- 4. COLOR MATH ---
-def get_universal_name(rgb):
-    r, g, b = [int(x) for x in rgb]
-    diff = max(r, g, b) - min(r, g, b)
-    if diff < 12: return "Neutral Gray"
-    try:
-        min_dist = float('inf')
-        closest_name = "Custom Shade"
-        for hex_val, name in webcolors.CSS3_HEX_TO_NAMES.items():
-            r_c, g_c, b_c = webcolors.hex_to_rgb(hex_val)
-            dist = (r_c - r)**2 + (g_c - g)**2 + (b_c - b)**2
-            if dist < min_dist:
-                min_dist = dist
-                closest_name = name
-        return closest_name.title().replace('Grey', 'Gray')
-    except: return "Detected Color"
+# Color distance
+def color_distance(l1, l2):
+    return np.linalg.norm(np.array(l1) - np.array(l2))
 
-def rgb_to_lab_scaled(rgb):
-    pixel_lab = cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2Lab)[0][0]
-    return [round(float(pixel_lab[0]*(100/255)),1), round(float(pixel_lab[1]-128),1), round(float(pixel_lab[2]-128),1)]
+# PDF Generator
+def generate_pdf(officer, case, drug, confidence, rgb, lab, image):
+    tz = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(tz).strftime("%d-%m-%Y %H:%M:%S")
 
-# --- 5. APP UI ---
-st.set_page_config(page_title="NCB Field Companion", page_icon="⚖️")
+    report_hash = hashlib.sha256(
+        f"{officer}{case}{drug}{now}".encode()
+    ).hexdigest()
 
-# CSS UI
-st.markdown("""
-    <style>
-    .stApp { background-color: #0E1117; }
-    .main-header { background-color: #002F6C; padding: 20px; border-radius: 10px; text-align: center; border-bottom: 4px solid #4E9F3D; margin-top: -55px;}
-    .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #002F6C; color: white; font-weight: bold; border: 1px solid #4E9F3D; }
-    </style>
-    """, unsafe_allow_html=True)
+    pdf_path = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf").name
+    doc = SimpleDocTemplate(pdf_path)
+    styles = getSampleStyleSheet()
 
-st.markdown('<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1></div>', unsafe_allow_html=True)
+    story = []
+    story.append(Paragraph("<b>NCB FIELD COMPANION REPORT</b>", styles["Title"]))
+    story.append(Paragraph(f"Officer ID: {officer}", styles["BodyText"]))
+    story.append(Paragraph(f"Case Ref: {case}", styles["BodyText"]))
+    story.append(Paragraph(f"Time (IST): {now}", styles["BodyText"]))
+    story.append(Paragraph(f"Suspected Drug: <b>{drug}</b>", styles["BodyText"]))
+    story.append(Paragraph(f"Confidence: {confidence:.1f}%", styles["BodyText"]))
+    story.append(Paragraph(f"RGB: {rgb}", styles["BodyText"]))
+    story.append(Paragraph(f"LAB: {lab}", styles["BodyText"]))
+    story.append(Paragraph(f"SHA256 Hash: {report_hash}", styles["BodyText"]))
 
-# SIDEBAR: Hardware Controls
-with st.sidebar:
-    st.header("⚙️ Hardware Settings")
-    flash_toggle = st.toggle("🔦 Turn on Flashlight", value=False)
-    st.divider()
-    off_id = st.text_input("Officer ID", "NCB-OFF-101")
-    case_no = st.text_input("Case Ref", "F.No-2024/09")
-    
-# Inject the Flashlight and Auto-Shutdown JS
-inject_hardware_controls(flash_toggle)
+    img_path = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+    cv2.imwrite(img_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    story.append(Image(img_path, width=3*inch, height=3*inch))
 
-model, meta = train_ncb_ai()
+    doc.build(story)
 
-st.subheader("1. Optical Evidence Capture")
-cam_img = st.camera_input("SCAN REAGENT VIAL")
+    with open(pdf_path, "rb") as f:
+        return f.read()
+        # ---------------- SIDEBAR ----------------
+st.sidebar.header("Officer Details")
+officer_id = st.sidebar.text_input("Officer ID")
+case_ref = st.sidebar.text_input("Case Reference")
 
-if cam_img:
-    img_bytes = cam_img.getvalue()
-    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
-    img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
-    
-    # Process center ROI
+brightness = st.sidebar.slider("Brightness", -50, 50, 0)
+
+# ---------------- CAMERA ----------------
+photo = st.camera_input("Capture Reagent Test")
+
+if photo is not None:
+
+    # Reset speech for new image
+    st.session_state.spoken = False
+
+    file_bytes = np.asarray(bytearray(photo.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    # Brightness adjustment
+    img = np.clip(img.astype(np.int16) + brightness, 0, 255).astype(np.uint8)
+
     h, w, _ = img.shape
-    r = 20
-    roi = img[h//2-r:h//2+r, w//2-r:w//2+r]
-    avg_rgb = np.mean(roi, axis=(0,1))[::-1]
-    lab = rgb_to_lab_scaled(avg_rgb)
-    hex_c = '#%02x%02x%02x' % (int(avg_rgb[0]), int(avg_rgb[1]), int(avg_rgb[2]))
-    u_name = get_universal_name(avg_rgb)
-    
-    st.write("### 2. Forensic Analysis")
-    st.markdown(f"""
-        <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_c};">
-            <h1 style="margin:0; color:white;">{u_name}</h1>
-            <p style="margin:0; color:#AAA;"><b>HEX:</b> {hex_c.upper()} | <b>LAB:</b> {lab}</p>
-        </div>
-    """, unsafe_allow_html=True)
 
-    # Prediction logic (Logistic Regression)
-    if model and meta:
-        probs = model.predict_proba([lab])[0]
-        idx = np.argmax(probs)
-        conf = probs[idx] * 100
-        if conf > 65:
-            drug = meta[0][idx]
-            st.success(f"⚖️ AI MATCH: {drug} ({conf:.1f}% Confidence)")
-            speech = f"Analysis complete. Probability of {drug} is {conf:.0f} percent."
-        else:
-            st.warning("Low confidence. No match found.")
-            speech = f"Detected {u_name}. No match found."
-            
-        # Talk Back
-        components.html(f'<script>window.speechSynthesis.cancel(); var m = new SpeechSynthesisUtterance("{speech}"); m.lang="en-IN"; window.speechSynthesis.speak(m);</script>', height=0)
+    # Center ROI
+    roi = img[h//2-20:h//2+20, w//2-20:w//2+20]
+    avg_rgb = roi.mean(axis=(0,1)).astype(int).tolist()
+    avg_lab = rgb_to_lab(avg_rgb)
 
-    st.write("---")
+    st.image(img, caption="Captured Image", use_container_width=True)
+    st.success(f"Detected RGB: {avg_rgb}")
+    st.info(f"LAB Value: {avg_lab.tolist()}")
+
+    # ---------------- AI MATCH ----------------
+    best_match = None
+    best_distance = 9999
+
+    for item in reagents:
+        reagent_lab = item["lab"]
+        dist = color_distance(avg_lab, reagent_lab)
+
+        if dist < best_distance:
+            best_distance = dist
+            best_match = item
+
+    confidence = max(0, min(100, 100 - best_distance * 2))
+
+    # ---------------- RESULT ----------------
+    if confidence >= 70:
+        drug = best_match["drug"]
+        st.success(f"🧪 Suspected Drug: {drug}")
+        st.metric("Confidence", f"{confidence:.1f}%")
+        talk_back(f"Possible match detected. {drug}")
+    else:
+        drug = "Inconclusive — Laboratory confirmation required"
+        st.warning(drug)
+        st.metric("Confidence", f"{confidence:.1f}%")
+        talk_back("Result is inconclusive. Laboratory confirmation required.")
+
+    # ---------------- PDF DOWNLOAD ----------------
     if st.button("📄 Generate PDF Report"):
-        st.info("Report generation active. (Requires reportlab)")
+        pdf = generate_pdf(
+            officer_id,
+            case_ref,
+            drug,
+            confidence,
+            avg_rgb,
+            avg_lab.tolist(),
+            img
+        )
+
+        st.download_button(
+            label="⬇️ Download NCB Report",
+            data=pdf,
+            file_name=f"NCB_Report_{case_ref or 'CASE'}.pdf",
+            mime="application/pdf"
+        )
