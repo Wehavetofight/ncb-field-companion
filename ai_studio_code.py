@@ -24,31 +24,40 @@ def get_india_time():
 
 # --- COLOR ENGINES ---
 def get_universal_name(rgb):
-    """Finds a human-readable name for display using RGB."""
-    min_colors = {}
+    """Finds the closest human-readable CSS3 color name."""
     try:
-        # Convert RGB to a list of ints to be safe
-        rgb = [int(x) for x in rgb]
-        for hex_code, name in webcolors.CSS3_HEX_TO_NAMES.items():
-            r_c, g_c, b_c = webcolors.hex_to_rgb(hex_code)
-            rd = (r_c - rgb[0]) ** 2
-            gd = (g_c - rgb[1]) ** 2
-            bd = (b_c - rgb[2]) ** 2
-            min_colors[(rd + gd + bd)] = name
-        return min_colors[min(min_colors.keys())].title().replace('Grey', 'Gray')
+        # Simple distance check against standard color names
+        names = webcolors.CSS3_HEX_TO_NAMES
+        min_dist = float('inf')
+        closest_name = "Unknown Shade"
+        
+        for hex_val, name in names.items():
+            r_c, g_c, b_c = webcolors.hex_to_rgb(hex_val)
+            dist = np.sqrt((r_c - rgb[0])**2 + (g_c - rgb[1])**2 + (b_c - rgb[2])**2)
+            if dist < min_dist:
+                min_dist = dist
+                closest_name = name
+        return closest_name.title().replace('Grey', 'Gray')
     except:
-        return "Unknown Shade"
+        return "Detected Shade"
 
-def rgb_to_lab(rgb):
-    """Converts RGB pixel to CIELAB space. FIXED TYPO HERE."""
-    # Create a 1x1 pixel image in RGB format
+def rgb_to_lab_scaled(rgb):
+    """
+    Converts RGB to CIELAB and scales to standard 0-100 range.
+    This ensures it matches the values in your reagents.json.
+    """
     pixel_rgb = np.uint8([[rgb]])
-    # The command is COLOR_RGB2Lab (with a '2', not an '@')
     pixel_lab = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2Lab)
-    return pixel_lab[0][0].astype(float)
+    l, a, b = pixel_lab[0][0].astype(float)
+    
+    # OpenCV scales L to 0-255, a/b to 0-255. 
+    # We must scale them back to standard: L(0-100), a(-127 to 128), b(-127 to 128)
+    standard_l = l * (100/255)
+    standard_a = a - 128
+    standard_b = b - 128
+    return [round(standard_l, 1), round(standard_a, 1), round(standard_b, 1)]
 
 def calculate_de(lab1, lab2):
-    """Calculates Delta E (Color distance) between two Lab colors."""
     return np.sqrt(np.sum((np.array(lab1) - np.array(lab2))**2))
 
 # --- PDF GENERATOR ---
@@ -80,7 +89,7 @@ def generate_pdf(case_info, color_data, match_info, img_hash):
 
 # --- APP UI ---
 st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
-st.markdown("<style>div.stButton > button {width:100%; border-radius:10px; height:3em; font-weight:bold;}</style>", unsafe_allow_html=True)
+st.markdown("<style>div.stButton > button {width:100%; border-radius:10px; height:3.5em; font-weight:bold; background-color:#002F6C; color:white;}</style>", unsafe_allow_html=True)
 
 st.title("⚖️ NCB Field Companion")
 st.caption(f"Presumptive Screening Aid | {get_india_time()}")
@@ -98,20 +107,18 @@ if camera_img:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_hash = hashlib.sha256(camera_img.getvalue()).hexdigest()[:16]
     
-    # 1. Simple Auto White Balance
+    # Process color
     img_float = img.astype(np.float32)
     avg_color = np.mean(img_float, axis=(0,1))
     img_balanced = np.clip(img_float * (np.mean(avg_color)/avg_color), 0, 255).astype(np.uint8)
     
-    # 2. Extract Color
     h, w, _ = img_balanced.shape
-    # Get center 5x5 average to be more stable than a single pixel
-    center_roi = img_balanced[h//2-2:h//2+2, w//2-2:w//2+2]
-    avg_bgr = np.mean(center_roi, axis=(0,1))
-    center_rgb = avg_bgr[::-1] # Convert BGR to RGB
+    roi = img_balanced[h//2-5:h//2+5, w//2-5:w//2+5]
+    avg_bgr = np.mean(roi, axis=(0,1))
+    center_rgb = avg_bgr[::-1]
     
-    # 3. Convert to Lab Space
-    center_lab = rgb_to_lab(center_rgb)
+    # SCALE THE LAB VALUES CORRECTLY
+    center_lab = rgb_to_lab_scaled(center_rgb)
     hex_val = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
     
@@ -119,37 +126,33 @@ if camera_img:
     st.markdown(f"""
         <div style="background:#1E1E1E; padding:20px; border-radius:15px; border-left:10px solid {hex_val};">
             <h2 style="margin:0; color:white;">{u_name}</h2>
-            <p style="margin:0; color:#AAA;">Detected HEX: {hex_val.upper()}</p>
-            <p style="margin:0; color:#AAA;">CIE Lab: L:{center_lab[0]:.1f} a:{center_lab[1]:.1f} b:{center_lab[2]:.1f}</p>
+            <p style="margin:0; color:#AAA;">Detected HEX: <b>{hex_val.upper()}</b></p>
+            <p style="margin:0; color:#4E9F3D; font-weight:bold;">CIELAB: L:{center_lab[0]} a:{center_lab[1]} b:{center_lab[2]}</p>
         </div>
     """, unsafe_allow_html=True)
 
-    # MATCHING LOGIC
     match_found = False
     match_text = "No Reagent Match Found"
     
     if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                db = json.load(f)
-            
-            for k, v in db.items():
-                target_lab = v.get('target_lab')
-                if target_lab:
-                    dist = calculate_de(center_lab, target_lab)
-                    tolerance = v.get('tolerance_de', 25.0)
-                    
-                    if dist < tolerance:
-                        match_text = f"Consistent with {v['target_compound']}"
-                        st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
-                        st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
-                        match_found = True
-                        break
-        except Exception as e:
-            st.error(f"Database Error: {e}")
+        with open(DB_FILE, "r") as f:
+            db = json.load(f)
+        
+        for k, v in db.items():
+            target_lab = v.get('target_lab')
+            if target_lab:
+                dist = calculate_de(center_lab, target_lab)
+                tolerance = v.get('tolerance_de', 25.0)
+                
+                if dist < tolerance:
+                    match_text = f"Consistent with {v['target_compound']}"
+                    st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
+                    st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
+                    match_found = True
+                    break
     
     if not match_found:
-        st.warning("Result: Universal color recorded. No matching reagent reference in database.")
+        st.warning("Result: Universal color recorded. No matching drug reagent in database.")
 
     st.write("---")
     case_data = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
@@ -161,7 +164,7 @@ with st.expander("🛠️ Admin: Register Current Color"):
     new_sub = st.text_input("Substance")
     new_reag = st.text_input("Reagent")
     new_ndps = st.text_input("NDPS Section")
-    if st.button("Save Profile"):
+    if st.button("Save to Database"):
         if camera_img and new_sub:
             current_db = {}
             if os.path.exists(DB_FILE):
@@ -170,10 +173,9 @@ with st.expander("🛠️ Admin: Register Current Color"):
             current_db[entry_id] = {
                 "reagent": new_reag,
                 "target_compound": new_sub,
-                "color_name": u_name,
-                "target_lab": [float(center_lab[0]), float(center_lab[1]), float(center_lab[2])],
+                "target_lab": center_lab,
                 "tolerance_de": 25.0,
                 "ndps_section": new_ndps
             }
             with open(DB_FILE, "w") as f: json.dump(current_db, f, indent=2)
-            st.success("New reagent profile saved! Please refresh.")
+            st.success("Saved! Refresh the page to see the match.")
