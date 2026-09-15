@@ -6,7 +6,6 @@ import json
 import os
 import pytz
 import webcolors
-import pandas as pd
 from datetime import datetime
 from io import BytesIO
 from sklearn.linear_model import LogisticRegression
@@ -22,7 +21,6 @@ from reportlab.lib.styles import getSampleStyleSheet
 # 1. CORE CONFIGURATION & TIME
 # ============================================================
 DB_FILE = "reagents.json"
-CSV_FILE = "drug_reagents.csv"
 IST = pytz.timezone('Asia/Kolkata')
 NCB_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/5/5a/Narcotics_Control_Bureau_logo.png/220px-Narcotics_Control_Bureau_logo.png"
 
@@ -30,31 +28,7 @@ def get_india_time():
     return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
 # ============================================================
-# 2. HARDWARE & SECURITY (Flashlight & Auto-Kill)
-# ============================================================
-def inject_security_logic(torch_on):
-    torch_js = "true" if torch_on else "false"
-    components.html(f"""
-        <script>
-        async function setTorch(state) {{
-            try {{
-                const stream = await navigator.mediaDevices.getUserMedia({{video: {{facingMode: "environment"}}}});
-                const track = stream.getVideoTracks()[0];
-                if (track.getCapabilities().torch) {{
-                    await track.applyConstraints({{advanced: [{{torch: state}}]}});
-                }}
-            }} catch (e) {{ console.log("Torch access denied"); }}
-        }}
-        setTorch({torch_js});
-
-        document.addEventListener("visibilitychange", () => {{
-            if (document.visibilityState === 'hidden') {{ window.location.reload(); }}
-        }});
-        </script>
-    """, height=0)
-
-# ============================================================
-# 3. VOICE ENGINE (Talk Back)
+# 2. VOICE ENGINE
 # ============================================================
 def talk_back(text):
     if text:
@@ -62,30 +36,24 @@ def talk_back(text):
             <script>
             window.speechSynthesis.cancel(); 
             var msg = new SpeechSynthesisUtterance("{text}");
-            msg.lang = 'en-IN'; msg.rate = 0.9;
+            msg.lang = 'en-IN'; msg.rate = 0.95;
             window.speechSynthesis.speak(msg);
             </script>
         """, height=0)
 
 # ============================================================
-# 4. AI MODEL TRAINING (Logic with Neutral Class & File Loading)
+# 3. AI MODEL TRAINING (FIXED TYPE ERROR)
 # ============================================================
 @st.cache_resource
 def train_ncb_ai():
-    # 1. Try to load from your Database files first
-    db = {}
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f: db = json.load(f)
-    
-    # 2. Fallback SIH Starter Kit (If file is empty or missing)
-    if len(db) < 2:
-        db = {
-            "Cocaine": {"target_lab": [38, 8, -48], "ndps": "Sec. 21 (Cocaine)"},
-            "Heroin": {"target_lab": [24, 32, -18], "ndps": "Sec. 21 (Opiates)"},
-            "Meth": {"target_lab": [48, 42, 45], "ndps": "Sec. 22 (Psychotropic)"},
-            "Cannabis": {"target_lab": [28, 22, -28], "ndps": "Sec. 20 (Cannabis)"},
-            "LSD": {"target_lab": [45, 38, -12], "ndps": "Sec. 22 (Psychotropic)"}
-        }
+    # SIH Starter Kit Data
+    db = {
+        "Cocaine": {"target_lab": [38, 8, -48], "ndps": "Sec. 21 (Cocaine)"},
+        "Heroin": {"target_lab": [24, 32, -18], "ndps": "Sec. 21 (Opiates)"},
+        "Meth": {"target_lab": [48, 42, 45], "ndps": "Sec. 22 (Psychotropic)"},
+        "Cannabis": {"target_lab": [28, 22, -28], "ndps": "Sec. 20 (Cannabis)"},
+        "LSD": {"target_lab": [45, 38, -12], "ndps": "Sec. 22 (Psychotropic)"}
+    }
     
     X, y, labels, ndps_map = [], [], [], {}
     
@@ -98,24 +66,24 @@ def train_ncb_ai():
             y.append(0)
     labels.append("Neutral (No Drug Detected)")
 
-    # 3. Load Forensic profiles
+    # Load real drug profiles
     for key, data in db.items():
         idx = len(labels)
-        t_lab = data.get('target_lab', data.get('lab'))
-        if t_lab:
-            for _ in range(150):
-                noise = np.random.normal(0, 2.2, 3) 
-                X.append(np.array(t_lab) + noise)
-                y.append(idx)
-            ndps_map[idx] = data.get('ndps_section', data.get('ndps', 'N/A'))
-            labels.append(data.get('target_compound', key))
+        t_lab = data.get('target_lab')
+        for _ in range(150):
+            noise = np.random.normal(0, 2.2, 3) 
+            X.append(np.array(t_lab) + noise)
+            y.append(idx)
+        ndps_map[idx] = data.get('ndps', 'N/A')
+        labels.append(key)
         
-    model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
+    # FIXED: Removed 'multi_class' which was causing the TypeError in scikit-learn 1.5+
+    model = LogisticRegression(max_iter=2000)
     model.fit(np.array(X), np.array(y))
     return model, (labels, ndps_map)
 
 # ============================================================
-# 5. FORENSIC COLOR MATH
+# 4. FORENSIC COLOR MATH
 # ============================================================
 def get_universal_name(rgb):
     r, g, b = [int(x) for x in rgb]
@@ -138,7 +106,7 @@ def rgb_to_lab_scaled(rgb):
     return [round(float(pixel_lab[0]*(100/255)),1), round(float(pixel_lab[1]-128),1), round(float(pixel_lab[2]-128),1)]
 
 # ============================================================
-# 6. PDF GENERATOR
+# 5. PDF GENERATOR
 # ============================================================
 def generate_forensic_report(case_info, color_data, result, conf, ndps, img_hash):
     buffer = BytesIO()
@@ -163,9 +131,9 @@ def generate_forensic_report(case_info, color_data, result, conf, ndps, img_hash
     return buffer.getvalue()
 
 # ============================================================
-# 7. APP UI LAYOUT
+# 6. APP UI
 # ============================================================
-st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
+st.set_page_config(page_title="NCB AI Shield", page_icon="⚖️")
 
 st.markdown("""
     <style>
@@ -175,20 +143,16 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown(f'<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1><p style="color:#4E9F3D; margin:0; font-weight:bold;">Forensic Intelligence Support</p></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1></div>', unsafe_allow_html=True)
 
 model, meta = train_ncb_ai()
 
 with st.sidebar:
     st.header("📋 Administration")
-    off_id = st.text_input("Officer ID", "NCB-DEL-101")
-    case_no = st.text_input("Case Reference", "F.No-" + datetime.now(IST).strftime("%Y/%m"))
-    st.divider()
-    flash = st.toggle("🔦 Turn on Flashlight")
+    off_id = st.text_input("Officer ID", "NCB-OFF-101")
+    case_no = st.text_input("Case Number", "F.No-" + datetime.now(IST).strftime("%Y/%m"))
     st.divider()
     st.write(f"System IST: {get_india_time()}")
-
-inject_security_logic(flash)
 
 st.subheader("1. Evidence Capture")
 cam_img = st.camera_input("SCAN REAGENT VIAL")
@@ -223,14 +187,14 @@ if cam_img:
         idx = np.argmax(probs)
         conf = probs[idx] * 100
         
-        if idx == 0: # Neutral detection
-            st.warning("⚠️ RESULT: No drug reagent detected (Neutral/Background).")
+        if idx == 0: # Neutral detection (The Wall fix)
+            st.warning("⚠️ RESULT: No drug reagent detected (Neutral Background).")
             speech += " No drug match found."
         elif conf > 70:
             res_drug, res_ndps = meta[0][idx], meta[1][idx]
             st.success(f"✅ AI MATCH: {res_drug} ({conf:.1f}% Confidence)")
             st.info(f"📜 Statute: {res_ndps}")
-            speech += f" Result consistent with {res_drug}."
+            speech += f" Consistent with {res_drug} at {conf:.0f} percent confidence."
         else:
             st.warning("Inconclusive result. Low AI confidence.")
             speech += " Result is inconclusive."
@@ -245,4 +209,4 @@ if cam_img:
         pdf_bytes = generate_forensic_report({'time': get_india_time(), 'officer': off_id, 'case': case_no}, 
                                              {'name': u_name, 'hex': hex_c.upper(), 'lab': lab}, 
                                              res_drug, conf, res_ndps, img_hash)
-        st.download_button("📄 Generate Report", pdf_bytes, f"NCB_Record_{img_hash}.pdf", "application/pdf")
+        st.download_button("📄 Download PDF Report", pdf_bytes, "NCB_Report.pdf", "application/pdf")
