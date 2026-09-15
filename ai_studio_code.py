@@ -10,7 +10,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 import pyttsx3
- ---------------- PAGE ----------------
+ 
+---------------- PAGE ----------------
 st.set_page_config(page_title="NCB Field Companion",
                    page_icon="🛡️",
                    layout="wide")
