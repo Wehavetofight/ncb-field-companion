@@ -17,48 +17,16 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 
-# --- 1. CONFIGURATION & TIME ---
+# --- 1. CONFIGURATION ---
 DB_FILE = "reagents.json"
 IST = pytz.timezone('Asia/Kolkata')
 
 def get_india_time():
     return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
-# --- 2. AI TRAINING (LOGISTIC REGRESSION) ---
-@st.cache_resource
-def train_ai_model():
-    """Trains a Logistic Regression model based on L, a, b coordinates."""
-    if not os.path.exists(DB_FILE):
-        return None, None
-    try:
-        with open(DB_FILE, "r") as f:
-            db = json.load(f)
-        
-        X_train, y_train, class_labels, ndps_map = [], [], [], {}
-        
-        for key, data in db.items():
-            target_lab = data.get('target_lab')
-            if target_lab:
-                # Synthetic Data Augmentation: Creates 150 variations per drug
-                # to handle shadows and different lighting conditions.
-                for _ in range(150):
-                    noise = np.random.normal(0, 2.5, 3) 
-                    X_train.append(np.array(target_lab) + noise)
-                    y_train.append(len(class_labels))
-                
-                ndps_map[len(class_labels)] = data.get('ndps_section', 'N/A')
-                class_labels.append(data['target_compound'])
-        
-        if not X_train: return None, None
-        
-        model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
-        model.fit(X_train, y_train)
-        return model, (class_labels, ndps_map)
-    except:
-        return None, None
-
-# --- 3. VOICE ENGINE ---
+# --- 2. VOICE ENGINE ---
 def talk_back(text):
+    """Triggers browser voice synthesis."""
     components.html(f"""
         <script>
         window.speechSynthesis.cancel(); 
@@ -69,10 +37,44 @@ def talk_back(text):
         </script>
     """, height=0)
 
-# --- 4. COLOR & FORENSIC MATH ---
+# --- 3. ML MODEL TRAINING (LOGISTIC REGRESSION) ---
+@st.cache_resource
+def run_ai_training():
+    """Trains the Logistic Regression model. Handles errors if DB is too small."""
+    if not os.path.exists(DB_FILE):
+        return None, None
+    try:
+        with open(DB_FILE, "r") as f:
+            db = json.load(f)
+        
+        X_train, y_train, class_labels, ndps_map = [], [], [], {}
+        
+        # Logistic Regression needs at least 2 different drugs to work
+        if len(db) < 2:
+            return "MIN_DATA_ERROR", None
+
+        for key, data in db.items():
+            target_lab = data.get('target_lab')
+            if target_lab:
+                # Augment data with noise for better field accuracy
+                for _ in range(100):
+                    noise = np.random.normal(0, 2.0, 3) 
+                    X_train.append(np.array(target_lab) + noise)
+                    y_train.append(len(class_labels))
+                
+                ndps_map[len(class_labels)] = data.get('ndps_section', 'N/A')
+                class_labels.append(data['target_compound'])
+        
+        model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
+        model.fit(X_train, y_train)
+        return model, (class_labels, ndps_map)
+    except Exception as e:
+        return f"ERROR: {str(e)}", None
+
+# --- 4. COLOR MATH ---
 def get_universal_name(rgb):
     try:
-        r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+        r, g, b = [int(x) for x in rgb]
         min_dist = float('inf')
         closest_name = "Unknown Shade"
         for hex_val, name in webcolors.CSS3_HEX_TO_NAMES.items():
@@ -102,11 +104,9 @@ def generate_forensic_pdf(case_info, color_data, match_info, confidence, ndps_in
         ["TIMESTAMP (IST)", case_info['time']],
         ["OFFICER ID", case_info['officer']],
         ["CASE REFERENCE", case_info['case']],
-        ["------------------", "------------------"],
         ["DETECTED SHADE", color_data['name']],
         ["HEX CODE", color_data['hex']],
         ["CIELAB VALUES", f"L:{color_data['lab'][0]} a:{color_data['lab'][1]} b:{color_data['lab'][2]}"],
-        ["------------------", "------------------"],
         ["AI PREDICTION", match_info],
         ["AI CONFIDENCE", f"{confidence:.1f}%"],
         ["NDPS PROVISION", ndps_info],
@@ -122,25 +122,25 @@ def generate_forensic_pdf(case_info, color_data, match_info, confidence, ndps_in
     doc.build([Paragraph("<b>NARCOTICS CONTROL BUREAU</b>", styles['Title']), Spacer(1,12), table])
     return buffer.getvalue()
 
-# --- 6. MAIN APP INTERFACE ---
-st.set_page_config(page_title="NCB AI Shield", page_icon="⚖️")
-st.markdown("<style>div.stButton > button {width:100%; border-radius:12px; height:3.5em; font-weight:bold; background-color:#002F6C; color:white; border: 1px solid #4E9F3D;}</style>", unsafe_allow_html=True)
+# --- 6. MAIN APP LOGIC ---
+st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
 
+# UI Headers
 st.title("⚖️ NCB Field Companion")
-st.caption(f"AI-Powered Forensic Screening | {get_india_time()}")
+st.caption(f"AI Forensic Screening | {get_india_time()}")
 
-# Train AI Model on Startup
-ml_model, meta = train_logistic_model()
+# Train AI Model
+ml_model, meta = run_ai_training()
 
 with st.sidebar:
     st.header("📋 Records")
     off_id = st.text_input("Officer ID", "NCB-OFF-442")
     case_ref = st.text_input("Case No.", "F.No-" + datetime.now(IST).strftime("%Y/%m/%d"))
+    st.divider()
     if st.button("Refresh AI Model"):
         st.cache_resource.clear()
         st.rerun()
 
-st.subheader("1. Optical Evidence Capture")
 camera_img = st.camera_input("Place sample in center")
 
 if camera_img:
@@ -148,6 +148,7 @@ if camera_img:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_hash = hashlib.sha256(camera_img.getvalue()).hexdigest()[:16]
     
+    # Process color
     h, w, _ = img.shape
     roi = img[h//2-15:h//2+15, w//2-15:w//2+15]
     avg_bgr = np.mean(roi, axis=(0,1))
@@ -156,21 +157,24 @@ if camera_img:
     hex_val = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
     
-    st.write("### 2. AI Forensic Analysis")
+    st.write("### Forensic Analysis")
     st.markdown(f"""
         <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_val};">
-            <h1 style="margin:0; color:white; font-size: 2.8em;">{u_name}</h1>
-            <p style="margin:0; color:#AAA; font-size: 1.2em;">HEX: <b>{hex_val.upper()}</b> | Lab: {center_lab}</p>
+            <h1 style="margin:0; color:white;">{u_name}</h1>
+            <p style="margin:0; color:#AAA;">HEX: {hex_val.upper()} | Lab: {center_lab}</p>
         </div>
     """, unsafe_allow_html=True)
 
-    # Logistic Regression Prediction
+    # Prediction Logic
     match_found = False
     drug_name = "No Reagent Match"
     ndps_note = "N/A"
     confidence = 0.0
-    
-    if ml_model and meta:
+    speech_text = f"Detected shade is {u_name}."
+
+    if isinstance(ml_model, str):
+        st.warning("AI Model requires at least 2 drugs in reagents.json to start predicting.")
+    elif ml_model and meta:
         probs = ml_model.predict_proba([center_lab])[0]
         idx = np.argmax(probs)
         confidence = probs[idx] * 100
@@ -181,19 +185,20 @@ if camera_img:
             st.success(f"✅ **AI MATCH:** {drug_name} ({confidence:.1f}% Confidence)")
             st.info(f"📜 **NDPS Provision:** {ndps_note}")
             match_found = True
-            speech = f"Detected {u_name}. Analysis indicates {confidence:.0f} percent probability of {drug_name}."
+            speech_text += f" Result consistent with {drug_name}."
         else:
-            speech = f"Detected {u_name}. Low AI confidence for drug match."
+            speech_text += " No drug match found."
     
-    talk_back(speech)
+    talk_back(speech_text)
 
+    # Actions
     st.write("---")
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         if st.button("🔊 Repeat Audio"):
-            talk_back(speech)
-    with col2:
-        case_data = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
-        color_data = {'name': u_name, 'hex': hex_val.upper(), 'lab': center_lab}
-        pdf_bytes = generate_forensic_pdf(case_data, color_data, drug_name, confidence, ndps_note, img_hash)
+            talk_back(speech_text)
+   with c2:
+        c_info = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
+        col_info = {'name': u_name, 'hex': hex_val.upper(), 'lab': center_lab}
+        pdf_bytes = generate_forensic_pdf(c_info, col_info, drug_name, confidence, ndps_note, img_hash)
         st.download_button(label="📄 Generate Report", data=pdf_bytes, file_name=f"NCB_Report.pdf", mime="application/pdf")
