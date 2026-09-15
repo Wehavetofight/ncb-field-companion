@@ -1,66 +1,44 @@
 {
-  "Scott_Cocaine": {
-    "reagent": "Scott Reagent",
-    "target_compound": "Cocaine HCl",
-    "color_name": "Cobalt Blue",
-    "target_lab": [38.0, 8.0, -48.0],
-    "tolerance_de": 25.0,
-    "ndps_section": "Sec. 21 (Commercial: 250g)"
-  },
   "Marquis_Heroin": {
-    "reagent": "Marquis Reagent",
-    "target_compound": "Heroin / Morphine",
-    "color_name": "Deep Violet / Purple",
-    "target_lab": [24.0, 32.0, -18.0],
-    "tolerance_de": 22.0,
-    "ndps_section": "Sec. 21 (Commercial: 250g)"
+    "reagent": "Marquis",
+    "target_compound": "Heroin",
+    "target_lab": [11.0, 25.0, 5.0],
+    "ndps_section": "Sec 21 (Opiates)",
+    "expected_visual": "Deep Purple"
   },
-  "Marquis_Amphetamine": {
-    "reagent": "Marquis Reagent",
-    "target_compound": "Amphetamine / Meth",
-    "color_name": "Orange to Red-Brown",
-    "target_lab": [48.0, 42.0, 45.0],
-    "tolerance_de": 22.0,
-    "ndps_section": "Sec. 22 (Commercial: 50g)"
-  },
-  "Duquenois_THC": {
-    "reagent": "Duquenois-Levine",
-    "target_compound": "Cannabis / Resin / THC",
-    "color_name": "Indigo Violet Layer",
-    "target_lab": [28.0, 22.0, -28.0],
-    "tolerance_de": 24.0,
-    "ndps_section": "Sec. 20 (Commercial: 1kg / 20kg)"
-  },
-  "Mandelin_Meth": {
-    "reagent": "Mandelin Reagent",
+  "Marquis_Meth": {
+    "reagent": "Marquis",
     "target_compound": "Methamphetamine",
-    "color_name": "Dark Green",
-    "target_lab": [42.0, -28.0, 22.0],
-    "tolerance_de": 22.0,
-    "ndps_section": "Sec. 22 (Commercial: 50g)"
+    "target_lab": [48.0, 42.0, 45.0],
+    "ndps_section": "Sec 22 (Psychotropic)",
+    "expected_visual": "Orange to Red-Brown"
   },
-  "Mecke_Opiates": {
-    "reagent": "Mecke Reagent",
-    "target_compound": "Opiates / Oxycodone",
-    "color_name": "Olive to Blue-Green",
-    "target_lab": [35.0, -18.0, 15.0],
-    "tolerance_de": 22.0,
-    "ndps_section": "Sec. 21 (Commercial: 250g)"
+  "Scott_Cocaine": {
+    "reagent": "Scott",
+    "target_compound": "Cocaine",
+    "target_lab": [38.0, 8.0, -48.0],
+    "ndps_section": "Sec 21 (Cocaine)",
+    "expected_visual": "Cobalt Blue"
+  },
+  "Duquenois_Cannabis": {
+    "reagent": "Duquenois-Levine",
+    "target_compound": "Cannabis/Hashish",
+    "target_lab": [28.0, 22.0, -28.0],
+    "ndps_section": "Sec 20 (Cannabis)",
+    "expected_visual": "Violet/Purple"
+  },
+  "Mandelin_Ketamine": {
+    "reagent": "Mandelin",
+    "target_compound": "Ketamine",
+    "target_lab": [55.0, 25.0, 65.0],
+    "ndps_section": "Sec 22 (Psychotropic)",
+    "expected_visual": "Orange"
   },
   "Ehrlich_LSD": {
-    "reagent": "Ehrlich Reagent",
-    "target_compound": "LSD / Indoles",
-    "color_name": "Pink to Purple",
+    "reagent": "Ehrlich",
+    "target_compound": "LSD",
     "target_lab": [45.0, 38.0, -12.0],
-    "tolerance_de": 20.0,
-    "ndps_section": "Sec. 22 (Commercial: 0.1g)"
-  },
-  "Simons_Meth": {
-    "reagent": "Simon's Reagent",
-    "target_compound": "Methamphetamine (Secondary Amines)",
-    "color_name": "Bright Cobalt Blue",
-    "target_lab": [45.0, -4.0, -45.0],
-    "tolerance_de": 20.0,
-    "ndps_section": "Sec. 22 (Commercial: 50g)"
+    "ndps_section": "Sec 22 (Psychotropic)",
+    "expected_visual": "Pink to Purple"
   }
 }
