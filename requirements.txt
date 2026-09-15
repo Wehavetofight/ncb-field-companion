@@ -4,3 +4,4 @@ numpy
 reportlab
 pytz
 webcolors
+scikit-learn
