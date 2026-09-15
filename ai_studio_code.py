@@ -1125,24 +1125,72 @@ if photo is not None:
 
 
     # ========================================================
-    # DATABASE INFORMATION
+    # DATABASE INFORMATION (CONTINUED)
     # ========================================================
-
     if csv_info is not None:
+        st.subheader("📋 Reagent Database Information")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Reagent:** {csv_info['reagent']}")
+            st.write(f"**Target Substance:** {csv_info['substance']}")
+        with col2:
+            st.write(f"**NDPS Provision:** {csv_info['ndps_section']}")
+            st.write(f"**Reference Color:** {csv_info['color']}")
 
-        st.subheader(
-            "📋 Reagent Database Information"
+    # ========================================================
+    # WEB-BASED TALK BACK (Works on Android Chrome)
+    # ========================================================
+    # We use JavaScript because the server cannot "speak" to your phone
+    if confidence >= 40:
+        speech_text = f"Analysis complete. The detected color is {csv_info['color'] if csv_info else 'Unknown'}. Statistical confidence of {predicted_drug} is {confidence:.0f} percent."
+    else:
+        speech_text = "Analysis inconclusive. No high confidence drug match found."
+
+    components.html(f"""
+        <script>
+        window.speechSynthesis.cancel(); 
+        var msg = new SpeechSynthesisUtterance("{speech_text}");
+        msg.lang = 'en-IN';
+        msg.rate = 0.9;
+        window.speechSynthesis.speak(msg);
+        </script>
+    """, height=0)
+
+    # ========================================================
+    # PDF REPORT GENERATION
+    # ========================================================
+    st.divider()
+    st.subheader("📄 Documentary Evidence")
+
+    if not officer_id or not case_ref:
+        st.warning("⚠️ Please enter Officer ID and Case Reference in the sidebar to generate a valid report.")
+    else:
+        # Generate the PDF in memory
+        pdf_data = generate_pdf(
+            officer=officer_id,
+            case=case_ref,
+            drug=drug,
+            confidence=confidence,
+            rgb=avg_rgb,
+            lab=avg_lab.tolist(),
+            image=img,
+            reagent=csv_info['reagent'] if csv_info else "N/A",
+            ndps_section=csv_info['ndps_section'] if csv_info else "N/A"
         )
 
-        col1, col2 = st.columns(2)
+        st.download_button(
+            label="📥 Download Signed Forensic Report (PDF)",
+            data=pdf_data,
+            file_name=f"NCB_Report_{case_ref.replace('/', '_')}.pdf",
+            mime="application/pdf"
+        )
 
-        with col1:
+# ============================================================
+# FOOTER
+# ============================================================
+st.sidebar.divider()
+st.sidebar.caption("© 2024 NCB Field Companion | SIH Problem 26231")
+st.sidebar.write(f"System Time: {get_india_time()}")
 
-            st.write(
-                f"**Reagent:** "
-                f"{csv_info['reagent']}"
-            )
-
-            st.write(
-                f"**Substance:** "
-                f"{csv_i
+    
+    
