@@ -197,7 +197,7 @@ if camera_img:
     with c1:
         if st.button("🔊 Repeat Audio"):
             talk_back(speech_text)
-   with c2:
+    with c2:
         c_info = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
         col_info = {'name': u_name, 'hex': hex_val.upper(), 'lab': center_lab}
         pdf_bytes = generate_forensic_pdf(c_info, col_info, drug_name, confidence, ndps_note, img_hash)
