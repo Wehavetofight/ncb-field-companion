@@ -27,7 +27,7 @@ def get_india_time():
 
 # --- 2. VOICE ENGINE ---
 def talk_back(text):
-    """Voice announcement with safety check."""
+    """Voice synthesis with error safety."""
     if text:
         components.html(f"""
             <script>
@@ -39,48 +39,59 @@ def talk_back(text):
             </script>
         """, height=0)
 
-# --- 3. AI MODEL TRAINING ---
+# --- 3. AI MODEL TRAINING (CRASH-PROOF) ---
 @st.cache_resource
 def train_ncb_ai():
+    """Trains AI using reagents.json. Fallbacks to Starter Kit if data is missing or < 2 classes."""
     db = {}
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f:
             try: db = json.load(f)
             except: db = {}
     
+    # FORCED STARTER DATA: This ensures the AI always has at least 2 classes to prevent crashes
     if len(db) < 2:
         db = {
-            "Scott_Cocaine": {"target_compound": "Cocaine HCl", "target_lab": [38.0, 8.0, -48.0], "ndps": "Sec. 21"},
-            "Marquis_Heroin": {"target_compound": "Heroin / Morphine", "target_lab": [24.0, 32.0, -18.0], "ndps": "Sec. 21"},
-            "Marquis_Meth": {"target_compound": "Amphetamine / Meth", "target_lab": [48.0, 42.0, 45.0], "ndps": "Sec. 22"},
-            "Duquenois_THC": {"target_compound": "Cannabis / THC", "target_lab": [28.0, 22.0, -28.0], "ndps": "Sec. 20"},
-            "Neutral": {"target_compound": "Negative", "target_lab": [65.0, 0.0, 0.0], "ndps": "N/A"}
+            "Cocaine": {"target_compound": "Cocaine", "target_lab": [38.0, 8.0, -48.0], "ndps": "Sec. 21"},
+            "Heroin": {"target_compound": "Heroin", "target_lab": [24.0, 32.0, -18.0], "ndps": "Sec. 21"},
+            "Meth": {"target_compound": "Methamphetamine", "target_lab": [48.0, 42.0, 45.0], "ndps": "Sec. 22"},
+            "Neutral": {"target_compound": "Negative", "target_lab": [70.0, 0.0, 0.0], "ndps": "N/A"}
         }
 
-    X, y, labels, ndps_map = [], [], [], {}
-    for key, data in db.items():
-        t_lab = data.get('target_lab')
-        if t_lab:
-            for _ in range(120):
-                noise = np.random.normal(0, 2.0, 3) 
-                X.append(np.array(t_lab) + noise)
-                y.append(len(labels))
-            ndps_map[len(labels)] = data.get('ndps_section', data.get('ndps', 'N/A'))
-            labels.append(data['target_compound'])
-    
-    model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
-    model.fit(X, y)
-    return model, (labels, ndps_map)
+    try:
+        X, y, labels, ndps_map = [], [], [], {}
+        for key, data in db.items():
+            t_lab = data.get('target_lab')
+            if t_lab:
+                # Add 100 noisy samples per drug for robustness
+                for _ in range(100):
+                    noise = np.random.normal(0, 2.0, 3) 
+                    X.append(np.array(t_lab) + noise)
+                    y.append(len(labels))
+                ndps_map[len(labels)] = data.get('ndps_section', data.get('ndps', 'N/A'))
+                labels.append(data['target_compound'])
+        
+        # Only fit if we have more than one class
+        if len(labels) < 2:
+            return None, None
 
-# --- 4. COLOR ANALYTICS ---
+        model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
+        model.fit(X, y)
+        return model, (labels, ndps_map)
+    except:
+        return None, None
+
+# --- 4. COLOR ANALYTICS (FIXED "ALWAYS GRAY" ISSUE) ---
 def get_universal_name(rgb):
     r, g, b = [int(x) for x in rgb]
-    # Check for Gray variants (where R, G, and B are almost equal)
+    
+    # Better neutral detection (allows more color before calling it gray)
     diff = max(r, g, b) - min(r, g, b)
-    if diff < 12: 
-        if r > 210: return "White"
-        if r < 40: return "Black"
-        return "Gray"
+    if diff < 10: 
+        if r > 215: return "White"
+        if r < 45: return "Black"
+        return "Neutral Gray"
+    
     try:
         min_dist = float('inf')
         closest_name = "Unknown Shade"
@@ -107,8 +118,6 @@ def generate_ncb_report(case_info, color_data, result, conf, ndps, img_hash):
         [Paragraph("<b>FORENSIC FIELD RECORD</b>", styles['Normal']), ""],
         ["TIMESTAMP", case_info['time']],
         ["OFFICER ID", case_info['officer']],
-        ["CASE REF", case_info['case']],
-        ["------------------", "------------------"],
         ["DETECTED COLOR", color_data['name']],
         ["HEX / CIELAB", f"{color_data['hex']} / {color_data['lab']}"],
         ["AI PREDICTION", result],
@@ -127,19 +136,20 @@ def generate_ncb_report(case_info, color_data, result, conf, ndps, img_hash):
     return buffer.getvalue()
 
 # --- 6. APP UI ---
-st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
+st.set_page_config(page_title="NCB AI Shield", page_icon="⚖️")
 
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; }
-    .main-header { background-color: #002F6C; padding: 20px; border-radius: 10px; text-align: center; border-bottom: 4px solid #4E9F3D; margin-top: -50px;}
+    .main-header { background-color: #002F6C; padding: 20px; border-radius: 10px; text-align: center; border-bottom: 4px solid #4E9F3D; margin-top: -55px;}
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #002F6C; color: white; font-weight: bold; border: 1px solid #4E9F3D; }
     </style>
     """, unsafe_allow_html=True)
 
 st.markdown(f'<div class="main-header"><img src="{NCB_LOGO}" width="70"><h1 style="color:white; margin:0;">NCB FIELD COMPANION</h1></div>', unsafe_allow_html=True)
-st.caption(f"Verifiable Forensic Log | {get_india_time()}")
+st.caption(f"Forensic AI Support | IST: {get_india_time()}")
 
+# Train Model
 model, meta = train_ncb_ai()
 
 with st.sidebar:
@@ -147,25 +157,24 @@ with st.sidebar:
     off_id = st.text_input("Officer ID", "NCB-OFF-442")
     case_ref = st.text_input("Case Number", "F.No-" + datetime.now(IST).strftime("%Y/%m"))
     st.divider()
-    if st.button("🔄 Sync Database"):
+    if st.button("🔄 Refresh System"):
         st.cache_resource.clear()
         st.rerun()
 
-st.subheader("1. Optical Evidence Capture")
-cam_img = st.camera_input("Scan Reagent Sample")
+st.subheader("1. Evidence Capture")
+cam_img = st.camera_input("Place vial in center of frame")
 
 if cam_img:
     img_bytes = cam_img.getvalue()
     img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
     img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
     
-    # NO GLOBAL WHITE BALANCE (Prevents "Always Gray" bug)
+    # FIXED COLOR CAPTURE: No "Graying-out" normalization
     h, w, _ = img.shape
     roi = img[h//2-15:h//2+15, w//2-15:w//2+15]
     avg_bgr = np.mean(roi, axis=(0,1))
     
-    # Convert BGR to RGB
-    center_rgb = avg_bgr[::-1]
+    center_rgb = avg_bgr[::-1] # BGR to RGB
     lab = rgb_to_lab_scaled(center_rgb)
     hex_c = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
@@ -181,7 +190,7 @@ if cam_img:
 
     # PREDICTION
     res_drug, res_ndps, conf = "No Match", "N/A", 0.0
-    speech = f"Detected shade is {u_name}." # Initialize speech early
+    speech = f"Detected shade is {u_name}."
 
     if model and meta:
         probs = model.predict_proba([lab])[0]
@@ -190,15 +199,12 @@ if cam_img:
         if conf > 65:
             res_drug, res_ndps = meta[0][idx], meta[1][idx]
             st.success(f"⚖️ **POSS. MATCH:** {res_drug} ({conf:.1f}% AI Confidence)")
-            speech += f" Analysis indicates {conf:.0f} percent probability of {res_drug}."
+            speech += f" Result consistent with {res_drug}."
         else:
-            st.warning("Low confidence. No reagent match found.")
-            speech += " No drug match found."
+            speech += " No matching drug found."
     
-    # TRIGGER VOICE
     talk_back(speech)
 
-    # DOCUMENTATION
     st.write("---")
     c1, c2 = st.columns(2)
     with c1:
@@ -207,4 +213,4 @@ if cam_img:
         rep_bytes = generate_ncb_report({'time': get_india_time(), 'officer': off_id, 'case': case_ref}, 
                                        {'name': u_name, 'hex': hex_c.upper(), 'lab': lab}, 
                                        res_drug, conf, res_ndps, img_hash)
-        st.download_button("📄 Generate Report", rep_bytes, f"NCB_Record.pdf", "application/pdf")
+        st.download_button("📄 Generate Report", rep_bytes, f"NCB_Report.pdf", "application/pdf")
