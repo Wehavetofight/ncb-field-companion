@@ -27,6 +27,8 @@ def get_universal_name(rgb):
     """Finds a human-readable name for display using RGB."""
     min_colors = {}
     try:
+        # Convert RGB to a list of ints to be safe
+        rgb = [int(x) for x in rgb]
         for hex_code, name in webcolors.CSS3_HEX_TO_NAMES.items():
             r_c, g_c, b_c = webcolors.hex_to_rgb(hex_code)
             rd = (r_c - rgb[0]) ** 2
@@ -38,10 +40,11 @@ def get_universal_name(rgb):
         return "Unknown Shade"
 
 def rgb_to_lab(rgb):
-    """Converts RGB pixel to CIELAB space for scientific matching."""
-    # Create a 1x1 pixel image
+    """Converts RGB pixel to CIELAB space. FIXED TYPO HERE."""
+    # Create a 1x1 pixel image in RGB format
     pixel_rgb = np.uint8([[rgb]])
-    pixel_lab = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB@Lab)
+    # The command is COLOR_RGB2Lab (with a '2', not an '@')
+    pixel_lab = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2Lab)
     return pixel_lab[0][0].astype(float)
 
 def calculate_de(lab1, lab2):
@@ -84,7 +87,7 @@ st.caption(f"Presumptive Screening Aid | {get_india_time()}")
 
 with st.sidebar:
     st.header("📋 Case Details")
-    off_id = st.text_input("Officer ID", "NCB-DEL-442")
+    off_id = st.text_input("Officer ID", "NCB-OFF-101")
     case_ref = st.text_input("Case No.", "F.No-" + datetime.now(IST).strftime("%Y/%m/%d"))
 
 st.subheader("1. Sample Evidence Capture")
@@ -95,15 +98,21 @@ if camera_img:
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_hash = hashlib.sha256(camera_img.getvalue()).hexdigest()[:16]
     
-    # Process color
+    # 1. Simple Auto White Balance
     img_float = img.astype(np.float32)
     avg_color = np.mean(img_float, axis=(0,1))
     img_balanced = np.clip(img_float * (np.mean(avg_color)/avg_color), 0, 255).astype(np.uint8)
     
+    # 2. Extract Color
     h, w, _ = img_balanced.shape
-    center_rgb = img_balanced[h//2, w//2][::-1] # RGB
-    center_lab = rgb_to_lab(center_rgb) # Convert to LAB for matching
-    hex_val = '#%02x%02x%02x' % tuple(center_rgb)
+    # Get center 5x5 average to be more stable than a single pixel
+    center_roi = img_balanced[h//2-2:h//2+2, w//2-2:w//2+2]
+    avg_bgr = np.mean(center_roi, axis=(0,1))
+    center_rgb = avg_bgr[::-1] # Convert BGR to RGB
+    
+    # 3. Convert to Lab Space
+    center_lab = rgb_to_lab(center_rgb)
+    hex_val = '#%02x%02x%02x' % (int(center_rgb[0]), int(center_rgb[1]), int(center_rgb[2]))
     u_name = get_universal_name(center_rgb)
     
     st.write("### 2. Analysis Result")
@@ -115,27 +124,29 @@ if camera_img:
         </div>
     """, unsafe_allow_html=True)
 
-    # MATCHING LOGIC (Matching against your LAB values)
+    # MATCHING LOGIC
     match_found = False
     match_text = "No Reagent Match Found"
     
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            db = json.load(f)
-        
-        for k, v in db.items():
-            target_lab = v.get('target_lab')
-            if target_lab:
-                # Calculate scientific Delta E distance
-                dist = calculate_de(center_lab, target_lab)
-                tolerance = v.get('tolerance_de', 20.0)
-                
-                if dist < tolerance:
-                    match_text = f"Consistent with {v['target_compound']}"
-                    st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
-                    st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
-                    match_found = True
-                    break
+        try:
+            with open(DB_FILE, "r") as f:
+                db = json.load(f)
+            
+            for k, v in db.items():
+                target_lab = v.get('target_lab')
+                if target_lab:
+                    dist = calculate_de(center_lab, target_lab)
+                    tolerance = v.get('tolerance_de', 25.0)
+                    
+                    if dist < tolerance:
+                        match_text = f"Consistent with {v['target_compound']}"
+                        st.success(f"✅ **POSS. MATCH:** {v['target_compound']}")
+                        st.info(f"🧬 **Reagent:** {v['reagent']} | **NDPS:** {v['ndps_section']}")
+                        match_found = True
+                        break
+        except Exception as e:
+            st.error(f"Database Error: {e}")
     
     if not match_found:
         st.warning("Result: Universal color recorded. No matching reagent reference in database.")
@@ -144,31 +155,25 @@ if camera_img:
     case_data = {'time': get_india_time(), 'officer': off_id, 'case': case_ref}
     color_data = {'name': u_name, 'hex': hex_val.upper()}
     pdf_file = generate_pdf(case_data, color_data, match_text, img_hash)
-    st.download_button(label="📥 Download Official Screening Report (PDF)", data=pdf_file, file_name=f"NCB_Report.pdf", mime="application/pdf")
+    st.download_button(label="📥 Download Official Report (PDF)", data=pdf_file, file_name=f"NCB_Report.pdf", mime="application/pdf")
 
-# --- ADMIN SECTION ---
-with st.expander("🛠️ Admin: Register Current Color into Database"):
-    st.write("This will save the current camera color as a new reagent benchmark.")
-    new_sub = st.text_input("Substance (e.g., MDMA)")
-    new_reag = st.text_input("Reagent (e.g., Marquis)")
+with st.expander("🛠️ Admin: Register Current Color"):
+    new_sub = st.text_input("Substance")
+    new_reag = st.text_input("Reagent")
     new_ndps = st.text_input("NDPS Section")
-    
     if st.button("Save Profile"):
         if camera_img and new_sub:
             current_db = {}
             if os.path.exists(DB_FILE):
                 with open(DB_FILE, "r") as f: current_db = json.load(f)
-            
-            entry_id = f"{new_reag}_{new_sub}".replace(" ", "_")
+            entry_id = f"{new_reag}_{new_sub}".replace(" ", "_").lower()
             current_db[entry_id] = {
                 "reagent": new_reag,
                 "target_compound": new_sub,
                 "color_name": u_name,
                 "target_lab": [float(center_lab[0]), float(center_lab[1]), float(center_lab[2])],
-                "tolerance_de": 20.0,
+                "tolerance_de": 25.0,
                 "ndps_section": new_ndps
             }
             with open(DB_FILE, "w") as f: json.dump(current_db, f, indent=2)
             st.success("New reagent profile saved! Please refresh.")
-        else:
-            st.error("Capture a photo and enter substance name first.")
