@@ -1,1196 +1,248 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import cv2
 import numpy as np
-import pandas as pd
-import json
 import hashlib
-import tempfile
+import json
 import os
-
-from datetime import datetime
 import pytz
-
-from PIL import ImageColor
-
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Image
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
-
-import pyttsx3
-
+import webcolors
+import pandas as pd
+from datetime import datetime
+from io import BytesIO
 from sklearn.linear_model import LogisticRegression
+import streamlit.components.v1 as components
 
-
-# ============================================================
-# PAGE CONFIG
-# ============================================================
-
-st.set_page_config(
-    page_title="NCB Field Companion",
-    page_icon="🛡️",
-    layout="wide"
-)
-
-st.title("🛡️ NCB FIELD COMPANION")
-st.caption("AI Presumptive Drug Identification Tool")
-
+# PDF Forensic Libraries
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
 
 # ============================================================
-# SESSION STATE
+# 1. CORE CONFIGURATION & TIME
 # ============================================================
-
-if "spoken" not in st.session_state:
-    st.session_state.spoken = False
-
-
-# ============================================================
-# LOAD JSON DATABASE
-# ============================================================
-
-try:
-    with open(
-        "reagents.json",
-        "r",
-        encoding="utf-8"
-    ) as f:
-        reagents_json = json.load(f)
-
-except FileNotFoundError:
-
-    reagents_json = {}
-
-    st.warning(
-        "reagents.json not found. "
-        "The CSV-based ML model will still work."
-    )
-
-
-# ============================================================
-# LOAD CSV DATABASE
-# ============================================================
-
+DB_FILE = "reagents.json"
 CSV_FILE = "drug_reagents.csv"
+IST = pytz.timezone('Asia/Kolkata')
+NCB_LOGO = "https://upload.wikimedia.org/wikipedia/en/thumb/5/5a/Narcotics_Control_Bureau_logo.png/220px-Narcotics_Control_Bureau_logo.png"
 
-
-@st.cache_data
-def load_reagent_csv():
-
-    df = pd.read_csv(CSV_FILE)
-
-    required_columns = [
-        "reagent",
-        "substance",
-        "color",
-        "hex_code",
-        "ndps_section"
-    ]
-
-    missing = [
-        column
-        for column in required_columns
-        if column not in df.columns
-    ]
-
-    if missing:
-
-        raise ValueError(
-            "Missing columns in drug_reagents.csv: "
-            + ", ".join(missing)
-        )
-
-    return df
-
-
-try:
-
-    df_reagents = load_reagent_csv()
-
-except Exception as e:
-
-    st.error(
-        f"Could not load drug_reagents.csv: {e}"
-    )
-
-    st.stop()
-
+def get_india_time():
+    return datetime.now(IST).strftime("%d-%m-%Y | %I:%M:%S %p")
 
 # ============================================================
-# HEX → LAB
+# 2. HARDWARE & SECURITY (Flashlight & Auto-Kill)
 # ============================================================
-
-def hex_to_lab(hex_code):
-
-    hex_code = str(
-        hex_code
-    ).strip()
-
-    if not hex_code.startswith("#"):
-        hex_code = "#" + hex_code
-
-    rgb = ImageColor.getrgb(
-        hex_code
-    )
-
-    r, g, b = rgb
-
-    bgr = np.uint8(
-        [[[b, g, r]]]
-    )
-
-    lab = cv2.cvtColor(
-        bgr,
-        cv2.COLOR_BGR2LAB
-    )
-
-    return lab[0, 0].astype(float)
-
-
-# Create LAB columns from CSV HEX values
-
-df_reagents["lab"] = (
-    df_reagents["hex_code"]
-    .apply(hex_to_lab)
-)
-
-df_reagents["L"] = (
-    df_reagents["lab"]
-    .apply(lambda x: x[0])
-)
-
-df_reagents["A"] = (
-    df_reagents["lab"]
-    .apply(lambda x: x[1])
-)
-
-df_reagents["B"] = (
-    df_reagents["lab"]
-    .apply(lambda x: x[2])
-)
-
-
-# ============================================================
-# PREPARE MACHINE LEARNING DATA
-# ============================================================
-
-X_base = df_reagents[
-    ["L", "A", "B"]
-].values.astype(float)
-
-y_base = df_reagents[
-    "substance"
-].astype(str).values
-
-
-# ============================================================
-# SYNTHETIC LAB SAMPLES
-# ============================================================
-
-rng = np.random.default_rng(42)
-
-X_train = []
-y_train = []
-
-
-for lab_value, substance in zip(
-    X_base,
-    y_base
-):
-
-    # Original sample
-    X_train.append(lab_value)
-    y_train.append(substance)
-
-    # Synthetic samples around original colour
-    for _ in range(100):
-
-        noise = rng.normal(
-            loc=0,
-            scale=[5.0, 5.0, 5.0],
-            size=3
-        )
-
-        new_lab = (
-            lab_value + noise
-        )
-
-        new_lab[0] = np.clip(
-            new_lab[0],
-            0,
-            255
-        )
-
-        new_lab[1] = np.clip(
-            new_lab[1],
-            0,
-            255
-        )
-
-        new_lab[2] = np.clip(
-            new_lab[2],
-            0,
-            255
-        )
-
-        X_train.append(
-            new_lab
-        )
-
-        y_train.append(
-            substance
-        )
-
-
-X_train = np.asarray(
-    X_train,
-    dtype=float
-)
-
-y_train = np.asarray(
-    y_train
-)
-
-
-# ============================================================
-# TRAIN LOGISTIC REGRESSION
-# ============================================================
-
-@st.cache_resource
-def train_model(X, y):
-
-    model = LogisticRegression(
-        max_iter=2000,
-        random_state=42
-    )
-
-    model.fit(
-        X,
-        y
-    )
-
-    return model
-
-
-try:
-
-    logistic_model = train_model(
-        X_train,
-        y_train
-    )
-
-except Exception as e:
-
-    st.error(
-        f"Could not train Logistic Regression: {e}"
-    )
-
-    st.stop()
-
-
-# ============================================================
-# RGB → LAB
-# ============================================================
-
-def rgb_to_lab(rgb):
-
-    rgb_array = np.uint8(
-        [[rgb]]
-    )
-
-    lab = cv2.cvtColor(
-        rgb_array,
-        cv2.COLOR_RGB2LAB
-    )
-
-    return lab[0][0]
-
-
-# ============================================================
-# COLOR DISTANCE
-# ============================================================
-
-def color_distance(
-    lab1,
-    lab2
-):
-
-    return np.linalg.norm(
-        np.asarray(
-            lab1,
-            dtype=float
-        )
-        -
-        np.asarray(
-            lab2,
-            dtype=float
-        )
-    )
-
-
-# ============================================================
-# ML PREDICTION
-# ============================================================
-
-def predict_drug(lab_value):
-
-    lab_value = np.asarray(
-        lab_value,
-        dtype=float
-    ).reshape(
-        1,
-        -1
-    )
-
-    prediction = (
-        logistic_model
-        .predict(
-            lab_value
-        )[0]
-    )
-
-    probabilities = (
-        logistic_model
-        .predict_proba(
-            lab_value
-        )[0]
-    )
-
-    confidence = (
-        float(
-            np.max(
-                probabilities
-            )
-        )
-        * 100
-    )
-
-    return (
-        prediction,
-        confidence
-    )
-
-
-# ============================================================
-# CSV INFORMATION
-# ============================================================
-
-def get_csv_information(
-    substance
-):
-
-    matches = df_reagents[
-        df_reagents[
-            "substance"
-        ].astype(str)
-        ==
-        str(substance)
-    ]
-
-    if matches.empty:
-        return None
-
-    return matches.iloc[0].to_dict()
-
-
-# ============================================================
-# JSON INFORMATION
-# ============================================================
-
-def get_json_information(
-    reagent_name,
-    substance
-):
-
-    if not isinstance(
-        reagents_json,
-        dict
-    ):
-        return None
-
-    for key, item in reagents_json.items():
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        json_reagent = str(
-            item.get(
-                "reagent",
-                ""
-            )
-        ).strip()
-
-        json_drug = str(
-            item.get(
-                "target_compound",
-                item.get(
-                    "drug",
-                    ""
-                )
-            )
-        ).strip()
-
-        if (
-            json_reagent.lower()
-            ==
-            str(
-                reagent_name
-            ).lower()
-            and
-            json_drug.lower()
-            ==
-            str(
-                substance
-            ).lower()
-        ):
-
-            return item
-
-    return None
-
-
-# ============================================================
-# TEXT TO SPEECH
-# ============================================================
-
-def talk_back(text):
-
-    if st.session_state.spoken:
-        return
-
-    try:
-
-        engine = pyttsx3.init()
-
-        engine.say(
-            text
-        )
-
-        engine.runAndWait()
-
-        engine.stop()
-
-        st.session_state.spoken = True
-
-    except Exception:
-
-        pass
-
-
-# ============================================================
-# PDF REPORT
-# ============================================================
-
-def generate_pdf(
-    officer,
-    case,
-    drug,
-    confidence,
-    rgb,
-    lab,
-    image,
-    reagent=None,
-    ndps_section=None
-):
-
-    tz = pytz.timezone(
-        "Asia/Kolkata"
-    )
-
-    now = datetime.now(
-        tz
-    ).strftime(
-        "%d-%m-%Y %H:%M:%S"
-    )
-
-    report_hash = hashlib.sha256(
-        (
-            f"{officer}"
-            f"{case}"
-            f"{drug}"
-            f"{confidence}"
-            f"{rgb}"
-            f"{lab}"
-            f"{now}"
-        ).encode()
-    ).hexdigest()
-
-    pdf_path = (
-        tempfile
-        .NamedTemporaryFile(
-            delete=False,
-            suffix=".pdf"
-        )
-        .name
-    )
-
-    doc = SimpleDocTemplate(
-        pdf_path
-    )
-
-    styles = (
-        getSampleStyleSheet()
-    )
-
-    story = []
-
-    story.append(
-        Paragraph(
-            "<b>NCB FIELD COMPANION REPORT</b>",
-            styles["Title"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"Officer ID: {officer}",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"Case Ref: {case}",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"Time (IST): {now}",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"Suspected Drug: "
-            f"<b>{drug}</b>",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"Confidence: "
-            f"{confidence:.1f}%",
-            styles["BodyText"]
-        )
-    )
-
-    if reagent:
-
-        story.append(
-            Paragraph(
-                f"Reagent: {reagent}",
-                styles["BodyText"]
-            )
-        )
-
-    if ndps_section:
-
-        story.append(
-            Paragraph(
-                f"NDPS Section: "
-                f"{ndps_section}",
-                styles["BodyText"]
-            )
-        )
-
-    story.append(
-        Paragraph(
-            f"RGB: {rgb}",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"LAB: {lab}",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            "<b>NOTE:</b> This is a "
-            "presumptive screening result "
-            "and requires laboratory "
-            "confirmation.",
-            styles["BodyText"]
-        )
-    )
-
-    story.append(
-        Paragraph(
-            f"SHA256 Hash: {report_hash}",
-            styles["BodyText"]
-        )
-    )
-
-    img_path = (
-        tempfile
-        .NamedTemporaryFile(
-            delete=False,
-            suffix=".png"
-        )
-        .name
-    )
-
-    cv2.imwrite(
-        img_path,
-        cv2.cvtColor(
-            image,
-            cv2.COLOR_RGB2BGR
-        )
-    )
-
-    story.append(
-        Image(
-            img_path,
-            width=3 * inch,
-            height=3 * inch
-        )
-    )
-
-    doc.build(
-        story
-    )
-
-    with open(
-        pdf_path,
-        "rb"
-    ) as f:
-
-        pdf_data = f.read()
-
-    try:
-
-        os.remove(
-            pdf_path
-        )
-
-        os.remove(
-            img_path
-        )
-
-    except Exception:
-
-        pass
-
-    return pdf_data
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.header(
-    "👮 Officer Details"
-)
-
-officer_id = (
-    st.sidebar.text_input(
-        "Officer ID"
-    )
-)
-
-case_ref = (
-    st.sidebar.text_input(
-        "Case Reference"
-    )
-)
-
-brightness = (
-    st.sidebar.slider(
-        "Brightness",
-        -50,
-        50,
-        0
-    )
-)
-
-
-# ============================================================
-# AI MODEL INFORMATION
-# ============================================================
-
-with st.sidebar.expander(
-    "🤖 AI Model Information"
-):
-
-    st.write(
-        "Model: Logistic Regression"
-    )
-
-    st.write(
-        "Training source: "
-        "drug_reagents.csv"
-    )
-
-    st.write(
-        f"Training substances: "
-        f"{df_reagents['substance'].nunique()}"
-    )
-
-    st.write(
-        f"CSV records: "
-        f"{len(df_reagents)}"
-    )
-
-    st.caption(
-        "LAB colour features are "
-        "generated from CSV HEX values."
-    )
-
-
-# ============================================================
-# FLASH CONTROL
-# ============================================================
-
-st.subheader(
-    "📷 Camera Controls"
-)
-
-flash_on = st.toggle(
-    "🔦 Flash ON/OFF",
-    value=False,
-    help=(
-        "Attempts to enable the "
-        "device camera torch when "
-        "supported by the browser."
-    )
-)
-
-if flash_on:
-
-    st.success(
-        "🔦 Flash requested: ON"
-    )
-
-else:
-
-    st.info(
-        "🔦 Flash: OFF"
-    )
-
-
-# ============================================================
-# BROWSER TORCH CONTROL
-# ============================================================
-
-components.html(
-    f"""
-    <script>
-
-    (async function() {{
-
-        const flashEnabled =
-            {str(flash_on).lower()};
-
-        try {{
-
-            if (
-                !navigator.mediaDevices ||
-                !navigator.mediaDevices.getUserMedia
-            ) {{
-
-                console.log(
-                    "Camera API unavailable."
-                );
-
-                return;
-            }}
-
-            const stream =
-                await navigator.mediaDevices
-                .getUserMedia({{
-                    video: {{
-                        facingMode: {{
-                            ideal: "environment"
-                        }}
-                    }}
-                }});
-
-            const tracks =
-                stream.getVideoTracks();
-
-            if (
-                tracks.length === 0
-            ) {{
-
-                console.log(
-                    "No camera track available."
-                );
-
-                return;
-            }}
-
-            const track =
-                tracks[0];
-
-            const capabilities =
-                track.getCapabilities
-                ? track.getCapabilities()
-                : {{}};
-
-            if (
-                !capabilities.torch
-            ) {{
-
-                console.log(
-                    "Torch not supported."
-                );
-
-                return;
-            }}
-
-            await track.applyConstraints({{
-                advanced: [
-                    {{
-                        torch:
-                            flashEnabled
-                    }}
-                ]
-            }});
-
-            console.log(
-                flashEnabled
-                ? "Torch ON"
-                : "Torch OFF"
-            );
-
-        }}
-        catch (error) {{
-
-            console.log(
-                "Torch error:",
-                error
-            );
-
-        }}
-
-    }})();
-
-    </script>
-    """,
-    height=0
-)
-
-
-# ============================================================
-# CAMERA
-# ============================================================
-
-photo = st.camera_input(
-    "📷 Capture Reagent Test"
-)
-
-
-# ============================================================
-# IMAGE ANALYSIS
-# ============================================================
-
-if photo is not None:
-
-    st.session_state.spoken = False
-
-    file_bytes = np.asarray(
-        bytearray(
-            photo.read()
-        ),
-        dtype=np.uint8
-    )
-
-    img = cv2.imdecode(
-        file_bytes,
-        cv2.IMREAD_COLOR
-    )
-
-    if img is None:
-
-        st.error(
-            "Unable to read the "
-            "captured image."
-        )
-
-        st.stop()
-
-    img = cv2.cvtColor(
-        img,
-        cv2.COLOR_BGR2RGB
-    )
-
-
-    # ========================================================
-    # BRIGHTNESS
-    # ========================================================
-
-    img = np.clip(
-        img.astype(np.int16)
-        + brightness,
-        0,
-        255
-    ).astype(
-        np.uint8
-    )
-
-
-    # ========================================================
-    # CENTER ROI
-    # ========================================================
-
-    h, w, _ = img.shape
-
-    roi_size = 40
-
-    y1 = max(
-        0,
-        h // 2
-        -
-        roi_size // 2
-    )
-
-    y2 = min(
-        h,
-        h // 2
-        +
-        roi_size // 2
-    )
-
-    x1 = max(
-        0,
-        w // 2
-        -
-        roi_size // 2
-    )
-
-    x2 = min(
-        w,
-        w // 2
-        +
-        roi_size // 2
-    )
-
-    roi = img[
-        y1:y2,
-        x1:x2
-    ]
-
-
-    # ========================================================
-    # RGB + LAB
-    # ========================================================
-
-    avg_rgb = (
-        roi
-        .mean(
-            axis=(0, 1)
-        )
-        .astype(int)
-        .tolist()
-    )
-
-    avg_lab = rgb_to_lab(
-        avg_rgb
-    )
-
-
-    # ========================================================
-    # DISPLAY IMAGE
-    # ========================================================
-
-    st.image(
-        img,
-        caption="Captured Image",
-        use_container_width=True
-    )
-
-    st.image(
-        roi,
-        caption="40 × 40 Analysis ROI",
-        width=200
-    )
-
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.success(
-            f"Detected RGB: "
-            f"{avg_rgb}"
-        )
-
-    with col2:
-
-        st.info(
-            f"LAB Value: "
-            f"{avg_lab.tolist()}"
-        )
-
-
-    # ========================================================
-    # AI PREDICTION
-    # ========================================================
-
-    try:
-
-        predicted_drug, confidence = (
-            predict_drug(
-                avg_lab
-            )
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"Prediction failed: {e}"
-        )
-
-        st.stop()
-
-
-    # ========================================================
-    # CSV INFORMATION
-    # ========================================================
-
-    csv_info = (
-        get_csv_information(
-            predicted_drug
-        )
-    )
-
-
-    # ========================================================
-    # RESULT
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "🧪 AI Analysis Result"
-    )
-
-
-    if confidence >= 70:
-
-        drug = predicted_drug
-
-        st.success(
-            f"🧪 Suspected Drug: "
-            f"{drug}"
-        )
-
-        st.metric(
-            "Logistic Regression Confidence",
-            f"{confidence:.1f}%"
-        )
-
-
-    elif confidence >= 40:
-
-        drug = predicted_drug
-
-        st.warning(
-            f"⚠️ Low-confidence "
-            f"possible match: "
-            f"{drug}"
-        )
-
-        st.metric(
-            "Confidence",
-            f"{confidence:.1f}%"
-        )
-
-
-    else:
-
-        drug = (
-            "Inconclusive — "
-            "Laboratory confirmation "
-            "required"
-        )
-
-        st.warning(
-            drug
-        )
-
-        st.metric(
-            "Confidence",
-            f"{confidence:.1f}%"
-        )
-
-
-    # ========================================================
-    # DATABASE INFORMATION (CONTINUED)
-    # ========================================================
-    if csv_info is not None:
-        st.subheader("📋 Reagent Database Information")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"**Reagent:** {csv_info['reagent']}")
-            st.write(f"**Target Substance:** {csv_info['substance']}")
-        with col2:
-            st.write(f"**NDPS Provision:** {csv_info['ndps_section']}")
-            st.write(f"**Reference Color:** {csv_info['color']}")
-
-    # ========================================================
-    # WEB-BASED TALK BACK (Works on Android Chrome)
-    # ========================================================
-    # We use JavaScript because the server cannot "speak" to your phone
-    if confidence >= 40:
-        speech_text = f"Analysis complete. The detected color is {csv_info['color'] if csv_info else 'Unknown'}. Statistical confidence of {predicted_drug} is {confidence:.0f} percent."
-    else:
-        speech_text = "Analysis inconclusive. No high confidence drug match found."
-
+def inject_security_logic(torch_on):
+    torch_js = "true" if torch_on else "false"
     components.html(f"""
         <script>
-        window.speechSynthesis.cancel(); 
-        var msg = new SpeechSynthesisUtterance("{speech_text}");
-        msg.lang = 'en-IN';
-        msg.rate = 0.9;
-        window.speechSynthesis.speak(msg);
+        async function setTorch(state) {{
+            try {{
+                const stream = await navigator.mediaDevices.getUserMedia({{video: {{facingMode: "environment"}}}});
+                const track = stream.getVideoTracks()[0];
+                if (track.getCapabilities().torch) {{
+                    await track.applyConstraints({{advanced: [{{torch: state}}]}});
+                }}
+            }} catch (e) {{ console.log("Torch access denied"); }}
+        }}
+        setTorch({torch_js});
+
+        document.addEventListener("visibilitychange", () => {{
+            if (document.visibilityState === 'hidden') {{ window.location.reload(); }}
+        }});
         </script>
     """, height=0)
 
-    # ========================================================
-    # PDF REPORT GENERATION
-    # ========================================================
+# ============================================================
+# 3. VOICE ENGINE (Talk Back)
+# ============================================================
+def talk_back(text):
+    if text:
+        components.html(f"""
+            <script>
+            window.speechSynthesis.cancel(); 
+            var msg = new SpeechSynthesisUtterance("{text}");
+            msg.lang = 'en-IN'; msg.rate = 0.9;
+            window.speechSynthesis.speak(msg);
+            </script>
+        """, height=0)
+
+# ============================================================
+# 4. AI MODEL TRAINING (Logic with Neutral Class & File Loading)
+# ============================================================
+@st.cache_resource
+def train_ncb_ai():
+    # 1. Try to load from your Database files first
+    db = {}
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f: db = json.load(f)
+    
+    # 2. Fallback SIH Starter Kit (If file is empty or missing)
+    if len(db) < 2:
+        db = {
+            "Cocaine": {"target_lab": [38, 8, -48], "ndps": "Sec. 21 (Cocaine)"},
+            "Heroin": {"target_lab": [24, 32, -18], "ndps": "Sec. 21 (Opiates)"},
+            "Meth": {"target_lab": [48, 42, 45], "ndps": "Sec. 22 (Psychotropic)"},
+            "Cannabis": {"target_lab": [28, 22, -28], "ndps": "Sec. 20 (Cannabis)"},
+            "LSD": {"target_lab": [45, 38, -12], "ndps": "Sec. 22 (Psychotropic)"}
+        }
+    
+    X, y, labels, ndps_map = [], [], [], {}
+    
+    # SAFEGUARD: THE "NEUTRAL" CLASS (Class 0)
+    # Prevents "The Wall" from being detected as a drug
+    neutrals = [[65,0,0], [95,0,0], [25,0,0], [75,2,4], [55,1,1]] 
+    for n_color in neutrals:
+        for _ in range(120):
+            X.append(np.array(n_color) + np.random.normal(0, 1.8, 3))
+            y.append(0)
+    labels.append("Neutral (No Drug Detected)")
+
+    # 3. Load Forensic profiles
+    for key, data in db.items():
+        idx = len(labels)
+        t_lab = data.get('target_lab', data.get('lab'))
+        if t_lab:
+            for _ in range(150):
+                noise = np.random.normal(0, 2.2, 3) 
+                X.append(np.array(t_lab) + noise)
+                y.append(idx)
+            ndps_map[idx] = data.get('ndps_section', data.get('ndps', 'N/A'))
+            labels.append(data.get('target_compound', key))
+        
+    model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=1000)
+    model.fit(np.array(X), np.array(y))
+    return model, (labels, ndps_map)
+
+# ============================================================
+# 5. FORENSIC COLOR MATH
+# ============================================================
+def get_universal_name(rgb):
+    r, g, b = [int(x) for x in rgb]
+    diff = max(r, g, b) - min(r, g, b)
+    if diff < 12: return "Neutral Gray/White"
+    try:
+        min_dist = float('inf')
+        closest_name = "Detected Shade"
+        for hex_val, name in webcolors.CSS3_HEX_TO_NAMES.items():
+            r_c, g_c, b_c = webcolors.hex_to_rgb(hex_val)
+            dist = np.sqrt((r_c - r)**2 + (g_c - g)**2 + (b_c - b)**2)
+            if dist < min_dist:
+                min_dist = dist
+                closest_name = name
+        return closest_name.title().replace('Grey', 'Gray')
+    except: return "Custom Shade"
+
+def rgb_to_lab_scaled(rgb):
+    pixel_lab = cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2Lab)[0][0]
+    return [round(float(pixel_lab[0]*(100/255)),1), round(float(pixel_lab[1]-128),1), round(float(pixel_lab[2]-128),1)]
+
+# ============================================================
+# 6. PDF GENERATOR
+# ============================================================
+def generate_forensic_report(case_info, color_data, result, conf, ndps, img_hash):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    data = [
+        [Paragraph("<b>FIELD EVIDENCE RECORD</b>", styles['Normal']), ""],
+        ["TIMESTAMP (IST)", case_info['time']],
+        ["OFFICER ID", case_info['officer']],
+        ["CASE REF", case_info['case']],
+        ["------------------", "------------------"],
+        ["DETECTED COLOR", color_data['name']],
+        ["HEX / CIELAB", f"{color_data['hex']} / {color_data['lab']}"],
+        ["AI PREDICTION", result],
+        ["CONFIDENCE", f"{conf:.1f}%"],
+        ["NDPS STATUTE", ndps],
+        ["EVIDENCE HASH", img_hash],
+    ]
+    table = Table(data, colWidths=[160, 320])
+    table.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.HexColor("#002F6C")), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('PADDING', (0,0), (-1,-1), 10)]))
+    doc.build([Paragraph("<b>NARCOTICS CONTROL BUREAU</b>", styles['Title']), Spacer(1,12), table])
+    return buffer.getvalue()
+
+# ============================================================
+# 7. APP UI LAYOUT
+# ============================================================
+st.set_page_config(page_title="NCB Smart Shield", page_icon="⚖️")
+
+st.markdown("""
+    <style>
+    .stApp { background-color: #0E1117; }
+    .main-header { background-color: #002F6C; padding: 20px; border-radius: 10px; text-align: center; border-bottom: 4px solid #4E9F3D; margin-top:-60px;}
+    .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #002F6C; color: white; font-weight: bold; border: 1px solid #4E9F3D; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.markdown(f'<div class="main-header"><h1 style="color:white; margin:0;">⚖️ NCB FIELD COMPANION</h1><p style="color:#4E9F3D; margin:0; font-weight:bold;">Forensic Intelligence Support</p></div>', unsafe_allow_html=True)
+
+model, meta = train_ncb_ai()
+
+with st.sidebar:
+    st.header("📋 Administration")
+    off_id = st.text_input("Officer ID", "NCB-DEL-101")
+    case_no = st.text_input("Case Reference", "F.No-" + datetime.now(IST).strftime("%Y/%m"))
     st.divider()
-    st.subheader("📄 Documentary Evidence")
+    flash = st.toggle("🔦 Turn on Flashlight")
+    st.divider()
+    st.write(f"System IST: {get_india_time()}")
 
-    if not officer_id or not case_ref:
-        st.warning("⚠️ Please enter Officer ID and Case Reference in the sidebar to generate a valid report.")
-    else:
-        # Generate the PDF in memory
-        pdf_data = generate_pdf(
-            officer=officer_id,
-            case=case_ref,
-            drug=drug,
-            confidence=confidence,
-            rgb=avg_rgb,
-            lab=avg_lab.tolist(),
-            image=img,
-            reagent=csv_info['reagent'] if csv_info else "N/A",
-            ndps_section=csv_info['ndps_section'] if csv_info else "N/A"
-        )
+inject_security_logic(flash)
 
-        st.download_button(
-            label="📥 Download Signed Forensic Report (PDF)",
-            data=pdf_data,
-            file_name=f"NCB_Report_{case_ref.replace('/', '_')}.pdf",
-            mime="application/pdf"
-        )
+st.subheader("1. Evidence Capture")
+cam_img = st.camera_input("SCAN REAGENT VIAL")
 
-# ============================================================
-# FOOTER
-# ============================================================
-st.sidebar.divider()
-st.sidebar.caption("© 2024 NCB Field Companion | SIH Problem 26231")
-st.sidebar.write(f"System Time: {get_india_time()}")
-
+if cam_img:
+    img_bytes = cam_img.getvalue()
+    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+    img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
     
+    # Process center ROI
+    h, w, _ = img.shape
+    roi = img[h//2-15:h//2+15, w//2-15:w//2+15]
+    avg_rgb = np.mean(roi, axis=(0,1))[::-1]
+    lab = rgb_to_lab_scaled(avg_rgb)
+    hex_c = '#%02x%02x%02x' % (int(avg_rgb[0]), int(avg_rgb[1]), int(avg_rgb[2]))
+    u_name = get_universal_name(avg_rgb)
     
+    st.write("### 2. Forensic Analysis")
+    st.markdown(f"""
+        <div style="background:#1E1E1E; padding:25px; border-radius:15px; border-left:12px solid {hex_c};">
+            <h1 style="margin:0; color:white; font-size: 2.8em;">{u_name}</h1>
+            <p style="margin:0; color:#AAA;"><b>HEX:</b> {hex_c.upper()} | <b>LAB:</b> {lab}</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # PREDICTION
+    res_drug, res_ndps, conf = "No Match", "N/A", 0.0
+    speech = f"Detected shade is {u_name}."
+
+    if model and meta:
+        probs = model.predict_proba([lab])[0]
+        idx = np.argmax(probs)
+        conf = probs[idx] * 100
+        
+        if idx == 0: # Neutral detection
+            st.warning("⚠️ RESULT: No drug reagent detected (Neutral/Background).")
+            speech += " No drug match found."
+        elif conf > 70:
+            res_drug, res_ndps = meta[0][idx], meta[1][idx]
+            st.success(f"✅ AI MATCH: {res_drug} ({conf:.1f}% Confidence)")
+            st.info(f"📜 Statute: {res_ndps}")
+            speech += f" Result consistent with {res_drug}."
+        else:
+            st.warning("Inconclusive result. Low AI confidence.")
+            speech += " Result is inconclusive."
+    
+    talk_back(speech)
+
+    st.write("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔊 Repeat Audio"): talk_back(speech)
+    with c2:
+        pdf_bytes = generate_forensic_report({'time': get_india_time(), 'officer': off_id, 'case': case_no}, 
+                                             {'name': u_name, 'hex': hex_c.upper(), 'lab': lab}, 
+                                             res_drug, conf, res_ndps, img_hash)
+        st.download_button("📄 Generate Report", pdf_bytes, f"NCB_Record_{img_hash}.pdf", "application/pdf")
